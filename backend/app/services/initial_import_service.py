@@ -1,0 +1,325 @@
+from datetime import UTC, datetime
+import json
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.drivers.errors import DriverCommandError
+from app.drivers.zte.c300_v125p3_telnet.running_config_parser import ParsedOnu, parse_running_config
+from app.models.entities import (
+    ConfigSnapshot,
+    DriverCommandLog,
+    GponProfile,
+    ImportJob,
+    Nap,
+    Olt,
+    Onu,
+    OnuType,
+    PonPort,
+    Vlan,
+    Zone,
+)
+from app.services.event_service import EventService
+
+
+class InitialImportService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.events = EventService(db)
+
+    IMPORT_SOURCE_BY_JOB_SOURCE = {
+        "telnet": "telnet_running_config",
+        "file": "file_upload",
+        "text": "text_input",
+    }
+
+    def create_preview_from_text(self, olt_id: int, raw_config: str, source: str = "text") -> dict:
+        olt = self._get_olt_or_error(olt_id)
+        try:
+            parsed = parse_running_config(raw_config)
+            summary = self._preview_summary(parsed)
+
+            snapshot = ConfigSnapshot(olt_id=olt.id, raw_config=raw_config, source_command="show running-config")
+            self.db.add(snapshot)
+            self.db.flush()
+            job = ImportJob(
+                olt_id=olt.id,
+                status="preview",
+                source=source,
+                raw_config_snapshot_id=snapshot.id,
+                parsed_summary_json=json.dumps(summary, ensure_ascii=True),
+            )
+            self.db.add(job)
+            self.db.flush()
+            olt.initial_import_status = "preview_created"
+            olt.last_import_job_id = job.id
+            self.events.record("IMPORT_PREVIEW_CREATED", "olt", olt.id, f"Preview inicial creado para OLT {olt.olt_code} - {olt.name}")
+            self.db.commit()
+            self.db.refresh(job)
+            return {"import_job_id": job.id, "snapshot_id": snapshot.id, **summary}
+        except Exception:
+            olt.initial_import_status = "failed"
+            self.db.commit()
+            raise
+
+    def create_preview_from_telnet(self, olt_id: int) -> dict:
+        olt = self._get_olt_or_error(olt_id)
+        from app.services.olt_service import OltService
+
+        olt_service = OltService(self.db)
+        driver = olt_service.driver_for(olt)
+        try:
+            driver.connect(disable_paging=False)
+            raw_config = driver.show_running_config()
+            self._log_command(olt.id, "show running-config", True, raw_config)
+        except DriverCommandError as exc:
+            olt.initial_import_status = "failed"
+            self._log_command(olt.id, exc.command, False, exc.output, exc.message)
+            self.db.commit()
+            raise
+        finally:
+            driver.disconnect()
+        return self.create_preview_from_text(olt.id, raw_config, source="telnet")
+
+    def confirm_import(self, import_job_id: int) -> dict:
+        job = self.db.get(ImportJob, import_job_id)
+        if not job:
+            raise ValueError("Import job not found")
+        olt = self._get_olt_or_error(job.olt_id)
+        return self._confirm_job(olt, job)
+
+    def preview(self, olt: Olt) -> dict:
+        return self.create_preview_from_telnet(olt.id)
+
+    def confirm(self, olt: Olt, import_job_id: int) -> dict:
+        job = self.db.get(ImportJob, import_job_id)
+        if not job or job.olt_id != olt.id:
+            raise ValueError("Import job not found for this OLT")
+        return self._confirm_job(olt, job)
+
+    def _confirm_job(self, olt: Olt, job: ImportJob) -> dict:
+        if job.status == "confirmed":
+            return {
+                "import_job_id": job.id,
+                "status": job.status,
+                "vlans_upserted": 0,
+                "gpon_profiles_upserted": 0,
+                "onu_types_upserted": 0,
+                "pon_ports_upserted": 0,
+                "onus_upserted": 0,
+                "zones_upserted": 0,
+                "naps_upserted": 0,
+                "warnings": json.loads(job.parsed_summary_json).get("warnings", []),
+            }
+
+        snapshot = self.db.get(ConfigSnapshot, job.raw_config_snapshot_id)
+        if not snapshot:
+            raise ValueError("Config snapshot not found")
+
+        parsed = parse_running_config(snapshot.raw_config)
+        counters = {
+            "vlans_upserted": 0,
+            "gpon_profiles_upserted": 0,
+            "onu_types_upserted": 0,
+            "pon_ports_upserted": 0,
+            "onus_upserted": 0,
+            "zones_upserted": 0,
+            "naps_upserted": 0,
+            "warnings": parsed.warnings,
+        }
+
+        for vlan in parsed.vlans:
+            self._upsert_vlan(olt.id, vlan)
+            counters["vlans_upserted"] += 1
+        for profile in parsed.gpon_profiles:
+            self._upsert_profile(olt.id, profile)
+            counters["gpon_profiles_upserted"] += 1
+        for onu_type in parsed.onu_types:
+            self._upsert_onu_type(olt.id, onu_type)
+            counters["onu_types_upserted"] += 1
+        for pon_port in parsed.pon_ports:
+            self._upsert_pon_port(olt.id, pon_port)
+            counters["pon_ports_upserted"] += 1
+        for onu in parsed.onus:
+            zone, zone_created = self._ensure_zone(onu.parsed_zone_name)
+            nap, nap_created = self._ensure_nap(zone, onu.parsed_nap_name)
+            counters["zones_upserted"] += 1 if zone_created else 0
+            counters["naps_upserted"] += 1 if nap_created else 0
+            self._upsert_onu(olt, job, onu, zone.id if zone else None, nap.id if nap else None)
+            counters["onus_upserted"] += 1
+
+        job.status = "confirmed"
+        job.confirmed_at = datetime.now(UTC)
+        olt.initial_import_status = "confirmed"
+        olt.last_import_job_id = job.id
+        olt.last_import_confirmed_at = job.confirmed_at
+        self.events.record("IMPORT_CONFIRMED", "olt", olt.id, f"Importacion inicial confirmada para OLT {olt.olt_code} - {olt.name}")
+        self.db.commit()
+        return {"import_job_id": job.id, "status": job.status, **counters}
+
+    def _preview_summary(self, parsed) -> dict:
+        base = parsed.summary()
+        return {
+            "vlans": base["vlans"],
+            "tcont_profiles": sum(1 for profile in parsed.gpon_profiles if profile.profile_type == "tcont"),
+            "traffic_profiles": sum(1 for profile in parsed.gpon_profiles if profile.profile_type == "traffic"),
+            "gpon_profiles": base["gpon_profiles"],
+            "onu_types": base["onu_types"],
+            "pon_ports": base["pon_ports"],
+            "onus": base["onus"],
+            "zones_detected": base["zones_detected"],
+            "naps_detected": base["naps_detected"],
+            "warnings": base["warnings"],
+        }
+
+    def _get_olt_or_error(self, olt_id: int) -> Olt:
+        olt = self.db.get(Olt, olt_id)
+        if not olt:
+            raise ValueError("OLT not found")
+        return olt
+
+    def list_jobs(self, olt: Olt) -> list[dict]:
+        jobs = self.db.scalars(select(ImportJob).where(ImportJob.olt_id == olt.id).order_by(ImportJob.created_at.desc())).all()
+        return [self._job_to_dict(job) for job in jobs]
+
+    def get_job(self, job_id: int) -> dict:
+        job = self.db.get(ImportJob, job_id)
+        if not job:
+            raise ValueError("Import job not found")
+        return self._job_to_dict(job)
+
+    def _upsert_vlan(self, olt_id: int, parsed) -> Vlan:
+        vlan = self.db.scalar(select(Vlan).where(Vlan.olt_id == olt_id, Vlan.vlan_id == parsed.vlan_id))
+        if not vlan:
+            vlan = Vlan(olt_id=olt_id, vlan_id=parsed.vlan_id)
+            self.db.add(vlan)
+        vlan.name = parsed.name
+        vlan.description = parsed.description
+        return vlan
+
+    def _upsert_profile(self, olt_id: int, parsed) -> GponProfile:
+        profile = self.db.scalar(
+            select(GponProfile).where(
+                GponProfile.olt_id == olt_id,
+                GponProfile.profile_type == parsed.profile_type,
+                GponProfile.name == parsed.name,
+            )
+        )
+        if not profile:
+            profile = GponProfile(olt_id=olt_id, profile_type=parsed.profile_type, name=parsed.name)
+            self.db.add(profile)
+        profile.upstream_rate = parsed.upstream_rate
+        profile.downstream_rate = parsed.downstream_rate
+        return profile
+
+    def _upsert_onu_type(self, olt_id: int, parsed) -> OnuType:
+        onu_type = self.db.scalar(select(OnuType).where(OnuType.olt_id == olt_id, OnuType.name == parsed.name))
+        if not onu_type:
+            onu_type = OnuType(olt_id=olt_id, name=parsed.name)
+            self.db.add(onu_type)
+        onu_type.vendor_detected = parsed.vendor_detected
+        onu_type.max_tcont = parsed.max_tcont
+        onu_type.max_gemport = parsed.max_gemport
+        onu_type.max_ports = parsed.max_ports
+        return onu_type
+
+    def _upsert_pon_port(self, olt_id: int, parsed) -> PonPort:
+        pon = self.db.scalar(select(PonPort).where(PonPort.olt_id == olt_id, PonPort.interface_name == parsed.interface_name))
+        if not pon:
+            pon = PonPort(olt_id=olt_id, slot=parsed.slot, port=parsed.port)
+            self.db.add(pon)
+        pon.rack = parsed.rack
+        pon.shelf = parsed.shelf
+        pon.slot = parsed.slot
+        pon.port = parsed.port
+        pon.interface_name = parsed.interface_name
+        return pon
+
+    def _ensure_zone(self, name: str | None) -> tuple[Zone | None, bool]:
+        if not name:
+            return None, False
+        zone = self.db.scalar(select(Zone).where(Zone.name == name))
+        if zone:
+            return zone, False
+        zone = Zone(name=name, description="Detectada por importacion inicial OLT")
+        self.db.add(zone)
+        self.db.flush()
+        return zone, True
+
+    def _ensure_nap(self, zone: Zone | None, name: str | None) -> tuple[Nap | None, bool]:
+        if not zone or not name:
+            return None, False
+        nap = self.db.scalar(select(Nap).where(Nap.zone_id == zone.id, Nap.name == name))
+        if nap:
+            return nap, False
+        nap = Nap(zone_id=zone.id, name=name, capacity=8, description="Detectada por importacion inicial OLT")
+        self.db.add(nap)
+        self.db.flush()
+        return nap, True
+
+    def _upsert_onu(self, olt: Olt, job: ImportJob, parsed: ParsedOnu, zone_id: int | None, nap_id: int | None) -> Onu:
+        olt_id = olt.id
+        onu = self.db.scalar(select(Onu).where(Onu.olt_id == olt_id, Onu.serial_number == parsed.serial_number))
+        pon = self.db.scalar(select(PonPort).where(PonPort.olt_id == olt_id, PonPort.interface_name == parsed.pon_interface_name))
+        if not onu:
+            onu = Onu(
+                olt_id=olt_id,
+                olt_code_snapshot=olt.olt_code,
+                customer_name=parsed.customer_name or parsed.serial_number,
+                serial_number=parsed.serial_number,
+                onu_interface=parsed.onu_interface,
+                onu_type=parsed.onu_type,
+                vlan=parsed.vlan or 0,
+                speed_profile=parsed.downstream_profile or parsed.upstream_profile or "imported",
+                speed_profile_up=parsed.upstream_profile,
+                speed_profile_down=parsed.downstream_profile,
+                status="unknown",
+                import_source=self.IMPORT_SOURCE_BY_JOB_SOURCE.get(job.source, "manual"),
+            )
+            self.db.add(onu)
+            self.db.flush()
+        onu.pon_port_id = pon.id if pon else onu.pon_port_id
+        onu.olt_code_snapshot = olt.olt_code
+        onu.zone_id = zone_id
+        onu.nap_id = nap_id
+        onu.customer_name = parsed.customer_name or onu.customer_name
+        onu.onu_interface = parsed.onu_interface
+        onu.onu_type = parsed.onu_type
+        onu.vlan = parsed.vlan or onu.vlan
+        onu.speed_profile = parsed.downstream_profile or parsed.upstream_profile or onu.speed_profile
+        onu.speed_profile_up = parsed.upstream_profile
+        onu.speed_profile_down = parsed.downstream_profile
+        onu.nap_port = parsed.parsed_nap_port
+        onu.imported_from_config = True
+        onu.auth_date = parsed.auth_date
+        onu.raw_description = parsed.raw_description
+        onu.parsed_zone_name = parsed.parsed_zone_name
+        onu.parsed_nap_name = parsed.parsed_nap_name
+        onu.parsed_nap_port = parsed.parsed_nap_port
+        onu.parsed_odn = parsed.parsed_odn
+        onu.source = "cli_import"
+        onu.import_source = self.IMPORT_SOURCE_BY_JOB_SOURCE.get(job.source, "manual")
+        return onu
+
+    def _job_to_dict(self, job: ImportJob) -> dict:
+        return {
+            "id": job.id,
+            "olt_id": job.olt_id,
+            "status": job.status,
+            "source": job.source,
+            "raw_config_snapshot_id": job.raw_config_snapshot_id,
+            "parsed_summary": json.loads(job.parsed_summary_json),
+            "created_at": job.created_at,
+            "confirmed_at": job.confirmed_at,
+        }
+
+    def _log_command(self, olt_id: int, command: str, success: bool, output: str | None = None, error: str | None = None) -> None:
+        self.db.add(
+            DriverCommandLog(
+                olt_id=olt_id,
+                command=command,
+                success=success,
+                error_message=error,
+                output_excerpt=(output or "")[:2000] if output else None,
+            )
+        )

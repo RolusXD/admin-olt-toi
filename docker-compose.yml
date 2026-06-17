@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: toi_olt_manager
+      POSTGRES_USER: toi_olt
+      POSTGRES_PASSWORD: toi_olt
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toi_olt -d toi_olt_manager"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://toi_olt:toi_olt@postgres:5432/toi_olt_manager
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: change-me-in-production
+      CRYPTO_KEY: change-me-32-byte-secret-for-prod
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./backend/storage:/app/storage
+
+  worker:
+    build:
+      context: ./backend
+    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+psycopg://toi_olt:toi_olt@postgres:5432/toi_olt_manager
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: change-me-in-production
+      CRYPTO_KEY: change-me-32-byte-secret-for-prod
+    depends_on:
+      - backend
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

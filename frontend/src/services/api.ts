@@ -1,0 +1,142 @@
+import type {
+  Alerts,
+  DashboardEnvironmentSummary,
+  DashboardSummary,
+  DriverCommandLog,
+  ImportConfirmResult,
+  ImportPreview,
+  Nap,
+  Olt,
+  OltInventorySummary,
+  OltPowerSyncResult,
+  OltSyncResult,
+  MonitoringExecution,
+  MonitoringLatest,
+  Onu,
+  OnuEvent,
+  PonPort,
+  PowerSample,
+  ProvisioningPlan,
+  ProvisioningPlanValidation,
+  ReadOnlyCheckResult,
+  UnauthorizedOnu,
+  UnauthorizedOnuDiscoveryResult,
+  Vlan,
+  Zone,
+} from "@/types";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = init?.body instanceof FormData;
+  const response = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: isFormData
+      ? init?.headers
+      : {
+          "Content-Type": "application/json",
+          ...(init?.headers ?? {}),
+        },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const errorBody = await response.json();
+      detail = typeof errorBody.detail === "string" ? errorBody.detail : "";
+    } catch {
+      detail = "";
+    }
+    throw new Error(detail || `API ${response.status}: ${response.statusText}`);
+  }
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  return response.json() as Promise<T>;
+}
+
+function toQuery(params: Record<string, string | number | undefined | null>) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      search.set(key, String(value));
+    }
+  });
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
+export const api = {
+  summary: (params: { olt_id?: number | string; olt_code?: string; environment?: string } = {}) =>
+    request<DashboardSummary>(`/dashboard/summary${toQuery(params)}`),
+  environmentSummary: () => request<DashboardEnvironmentSummary>("/dashboard/environment-summary"),
+  olts: (params: { environment?: string } = {}) => request<Olt[]>(`/olts${toQuery(params)}`),
+  olt: (id: number | string) => request<Olt>(`/olts/${id}`),
+  oltInventorySummary: (id: number | string) => request<OltInventorySummary>(`/olts/${id}/inventory-summary`),
+  zones: () => request<Zone[]>("/zones"),
+  naps: () => request<Nap[]>("/naps"),
+  vlans: (params: { olt_id?: number | string; olt_code?: string } = {}) => request<Vlan[]>(`/vlans${toQuery(params)}`),
+  ponPorts: (params: { olt_id?: number | string; olt_code?: string } = {}) => request<PonPort[]>(`/pon-ports${toQuery(params)}`),
+  onus: (params: Record<string, string | number | undefined | null> = {}) => request<Onu[]>(`/onus${toQuery(params)}`),
+  onu: (id: number | string) => request<Onu>(`/onus/${id}`),
+  onuPowerHistory: (id: number | string) => request<PowerSample[]>(`/onus/${id}/power-history`),
+  onuEvents: (id: number | string) => request<OnuEvent[]>(`/onus/${id}/events`),
+  alerts: (params: { olt_id?: number | string; olt_code?: string } = {}) => request<Alerts>(`/alerts${toQuery(params)}`),
+  unauthorizedOnus: (params: Record<string, string | number | undefined | null> = {}) =>
+    request<UnauthorizedOnu[]>(`/unauthorized-onus${toQuery(params)}`),
+  discoverUnauthorizedOnus: (oltId: number) =>
+    request<UnauthorizedOnuDiscoveryResult>(`/olts/${oltId}/discover-unauthorized-onus`, { method: "POST" }),
+  ignoreUnauthorizedOnu: (id: number) => request<UnauthorizedOnu>(`/unauthorized-onus/${id}/ignore`, { method: "PUT" }),
+  restoreUnauthorizedOnu: (id: number) => request<UnauthorizedOnu>(`/unauthorized-onus/${id}/restore`, { method: "PUT" }),
+  readyUnauthorizedOnu: (id: number) => request<UnauthorizedOnu>(`/unauthorized-onus/${id}/ready`, { method: "PUT" }),
+  readOnlyCheck: (oltId: number) => request<ReadOnlyCheckResult>(`/olts/${oltId}/read-only-check`, { method: "POST" }),
+  commandLogs: (oltId: number, limit = 50) => request<DriverCommandLog[]>(`/olts/${oltId}/command-logs${toQuery({ limit })}`),
+  monitoringExecutions: (params: Record<string, string | number | undefined | null> = {}) =>
+    request<MonitoringExecution[]>(`/monitoring/executions${toQuery(params)}`),
+  monitoringLatest: (params: { olt_id?: number | string; olt_code?: string } = {}) =>
+    request<MonitoringLatest>(`/monitoring/latest${toQuery(params)}`),
+  syncOnusReadOnly: (oltId: number) => request<OltSyncResult>(`/olts/${oltId}/sync-onus`, { method: "POST" }),
+  syncPower: (oltId: number, options: { limit?: number | string; interfaces?: string[] }) =>
+    request<OltPowerSyncResult>(`/olts/${oltId}/sync-power${toQuery({ limit: options.limit })}`, {
+      method: "POST",
+      body: options.interfaces?.length ? JSON.stringify(options.interfaces) : undefined,
+    }),
+  previewImportFromText: (oltId: number, rawConfig: string) =>
+    request<ImportPreview>(`/olts/${oltId}/import/preview-from-text`, {
+      method: "POST",
+      body: JSON.stringify({ raw_config: rawConfig }),
+    }),
+  previewImportFromFile: (oltId: number, file: File) => {
+    const formData = new FormData();
+    formData.set("file", file);
+    return request<ImportPreview>(`/olts/${oltId}/import/preview-from-file`, { method: "POST", body: formData });
+  },
+  previewImportFromTelnet: (oltId: number) =>
+    request<ImportPreview>(`/olts/${oltId}/import/preview-from-telnet`, { method: "POST" }),
+  confirmImport: (importJobId: number) =>
+    request<ImportConfirmResult>(`/import-jobs/${importJobId}/confirm`, { method: "POST" }),
+  createOlt: (payload: Record<string, unknown>) =>
+    request<Olt>("/olts", { method: "POST", body: JSON.stringify(payload) }),
+  updateOlt: (id: number | string, payload: Record<string, unknown>) =>
+    request<Olt>(`/olts/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
+  createZone: (payload: Record<string, unknown>) =>
+    request<Zone>("/zones", { method: "POST", body: JSON.stringify(payload) }),
+  createNap: (payload: Record<string, unknown>) =>
+    request<Nap>("/naps", { method: "POST", body: JSON.stringify(payload) }),
+  createOnu: (payload: Record<string, unknown>) =>
+    request<Onu>("/onus", { method: "POST", body: JSON.stringify(payload) }),
+  provisioningPlans: (params: Record<string, string | number | undefined | null> = {}) =>
+    request<ProvisioningPlan[]>(`/provisioning-plans${toQuery(params)}`),
+  provisioningPlanById: (id: number | string) => request<ProvisioningPlan>(`/provisioning-plans/${id}`),
+  createProvisioningPlan: (payload: Record<string, unknown>) =>
+    request<ProvisioningPlan>("/provisioning-plans", { method: "POST", body: JSON.stringify(payload) }),
+  validateProvisioningPlan: (id: number | string) =>
+    request<ProvisioningPlanValidation>(`/provisioning-plans/${id}/validate`, { method: "PUT" }),
+  approveProvisioningPlan: (id: number | string) =>
+    request<ProvisioningPlan>(`/provisioning-plans/${id}/approve`, { method: "PUT" }),
+  cancelProvisioningPlan: (id: number | string) =>
+    request<ProvisioningPlan>(`/provisioning-plans/${id}/cancel`, { method: "PUT" }),
+  unauthorized: () => request<Array<{ interface: string; serial_number: string; status: string }>>("/provisioning/unauthorized"),
+  provisioningPlan: (payload: Record<string, unknown>) =>
+    request<{ commands: string[] }>("/provisioning/plan", { method: "POST", body: JSON.stringify(payload) }),
+};
