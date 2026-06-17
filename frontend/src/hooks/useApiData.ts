@@ -1,8 +1,9 @@
 "use client";
 
+import type { DependencyList } from "react";
 import { useEffect, useState } from "react";
 
-export function useApiData<T>(loader: () => Promise<T>, fallback: T) {
+export function useApiData<T>(loader: () => Promise<T>, fallback: T, deps: DependencyList = []) {
   const [data, setData] = useState<T>(fallback);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -25,7 +26,7 @@ export function useApiData<T>(loader: () => Promise<T>, fallback: T) {
     return () => {
       active = false;
     };
-  }, []);
+  }, deps);
 
   return { data, error, loading, setData };
 }

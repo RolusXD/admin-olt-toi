@@ -17,6 +17,7 @@ from app.models.entities import (
     Onu,
     OnuType,
     PonPort,
+    ProfileCatalog,
     SpeedProfile,
     Vlan,
     Zone,
@@ -138,6 +139,8 @@ class InitialImportService:
             self._upsert_profile(olt.id, profile)
             imported_profiles.append(profile)
             counters["gpon_profiles_upserted"] += 1
+        for profile_catalog in parsed.profile_catalogs:
+            self._upsert_profile_catalog(olt, profile_catalog)
         self._sync_speed_profiles(olt.id, imported_profiles)
         for onu_type in parsed.onu_types:
             self._upsert_onu_type(olt, onu_type)
@@ -228,15 +231,55 @@ class InitialImportService:
         if not onu_type:
             onu_type = OnuType(olt_id=olt.id, name=parsed.name)
             self.db.add(onu_type)
+        elif onu_type.source != "imported" or not onu_type.is_active:
+            return onu_type
         onu_type.olt_code_snapshot = olt.olt_code
+        onu_type.vendor = olt.vendor
+        onu_type.model = olt.model
+        onu_type.firmware = olt.firmware
         onu_type.vendor_detected = parsed.vendor_detected
+        onu_type.technology = parsed.technology.upper()
         onu_type.max_tcont = parsed.max_tcont
         onu_type.max_gemport = parsed.max_gemport
         onu_type.max_ports = parsed.max_ports
-        onu_type.technology = "GPON"
+        onu_type.max_switch_perslot = parsed.max_switch_perslot
+        onu_type.max_flow_perswitch = parsed.max_flow_perswitch
+        onu_type.max_iphost = parsed.max_iphost
+        onu_type.ethernet_ports = parsed.ethernet_ports
+        onu_type.wifi_ports = parsed.wifi_ports
+        onu_type.pots_ports = parsed.pots_ports
+        onu_type.rf_ports = parsed.rf_ports
         onu_type.source = "imported"
         onu_type.is_active = True
         return onu_type
+
+    def _upsert_profile_catalog(self, olt: Olt, parsed) -> ProfileCatalog:
+        catalog = self.db.scalar(
+            select(ProfileCatalog).where(
+                ProfileCatalog.olt_id == olt.id,
+                ProfileCatalog.profile_kind == parsed.profile_kind,
+                ProfileCatalog.name == parsed.name,
+            )
+        )
+        if not catalog:
+            catalog = ProfileCatalog(olt_id=olt.id, profile_kind=parsed.profile_kind, name=parsed.name)
+            self.db.add(catalog)
+        elif catalog.source != "imported" or not catalog.is_active:
+            return catalog
+        catalog.olt_code_snapshot = olt.olt_code
+        catalog.vendor = olt.vendor
+        catalog.model = olt.model
+        catalog.firmware = olt.firmware
+        catalog.direction = parsed.direction
+        catalog.type_value = parsed.type_value
+        catalog.fixed_kbps = parsed.fixed_kbps
+        catalog.assured_kbps = parsed.assured_kbps
+        catalog.maximum_kbps = parsed.maximum_kbps
+        catalog.sir_kbps = parsed.sir_kbps
+        catalog.pir_kbps = parsed.pir_kbps
+        catalog.source = "imported"
+        catalog.is_active = True
+        return catalog
 
     def _upsert_pon_port(self, olt_id: int, parsed) -> PonPort:
         pon = self.db.scalar(select(PonPort).where(PonPort.olt_id == olt_id, PonPort.interface_name == parsed.interface_name))
@@ -343,9 +386,30 @@ class InitialImportService:
             speed = SpeedProfile(olt_id=olt_id, profile_code=code)
             self.db.add(speed)
         speed.olt_code_snapshot = olt.olt_code if olt else speed.olt_code_snapshot
+        speed.vendor = olt.vendor if olt else speed.vendor
+        speed.model = olt.model if olt else speed.model
+        speed.firmware = olt.firmware if olt else speed.firmware
         speed.name = base
         speed.upstream_profile_name = up.name
         speed.downstream_profile_name = down.name
+        upload_catalog = self.db.scalar(
+            select(ProfileCatalog).where(
+                ProfileCatalog.olt_id == olt_id,
+                ProfileCatalog.profile_kind == "tcont",
+                ProfileCatalog.name == up.name,
+                ProfileCatalog.is_active.is_(True),
+            )
+        )
+        download_catalog = self.db.scalar(
+            select(ProfileCatalog).where(
+                ProfileCatalog.olt_id == olt_id,
+                ProfileCatalog.profile_kind == "traffic",
+                ProfileCatalog.name == down.name,
+                ProfileCatalog.is_active.is_(True),
+            )
+        )
+        speed.upload_profile_id = upload_catalog.id if upload_catalog else None
+        speed.download_profile_id = download_catalog.id if download_catalog else None
         speed.upstream_kbps = up.upstream_rate
         speed.downstream_kbps = down.downstream_rate
         speed.technology = "GPON"

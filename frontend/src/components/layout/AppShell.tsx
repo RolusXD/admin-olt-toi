@@ -13,6 +13,7 @@ const nav = [
   { label: "ONUs Pendientes", icon: ClipboardList, href: "/onus-pendientes" },
   { label: "Tipos ONU", icon: Boxes, href: "/onu-types" },
   { label: "Perfiles", icon: Boxes, href: "/speed-profiles" },
+  { label: "Catalogos GPON", icon: Boxes, href: "/profile-catalogs" },
   { label: "VLANs", icon: Boxes, href: "/vlans" },
   { label: "Zonas", icon: Boxes, href: "/zonas" },
   { label: "NAPs", icon: Boxes, href: "/naps" },

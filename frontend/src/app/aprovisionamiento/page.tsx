@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Panel } from "@/components/ui/panel";
 import { api } from "@/services/api";
 import { useApiData } from "@/hooks/useApiData";
-import type { Nap, NapPort, Olt, Onu, OnuType, ProvisioningPlan, SpeedProfile, UnauthorizedOnu, Vlan, Zone } from "@/types";
+import type { Nap, NapPort, Olt, Onu, OnuType, ProfileCatalog, ProvisioningPlan, UnauthorizedOnu, Vlan, Zone } from "@/types";
 
 export default function ProvisioningPage() {
   const [showLab, setShowLab] = useState(false);
@@ -21,18 +21,28 @@ export default function ProvisioningPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const olts = useApiData<Olt[]>(() => api.olts(showLab ? {} : { environment: "production" }), []);
+  const olts = useApiData<Olt[]>(() => api.olts(showLab ? {} : { environment: "production" }), [], [showLab]);
   const pending = useApiData<UnauthorizedOnu[]>(
     () => api.unauthorizedOnus({ environment, status: "pending" }),
     [],
+    [environment],
   );
   const zones = useApiData<Zone[]>(api.zones, []);
   const naps = useApiData<Nap[]>(api.naps, []);
-  const vlans = useApiData<Vlan[]>(() => api.vlans(selectedOltId ? { olt_id: selectedOltId } : {}), []);
+  const vlans = useApiData<Vlan[]>(() => api.vlans(selectedOltId ? { olt_id: selectedOltId } : {}), [], [selectedOltId]);
   const onuTypes = useApiData<OnuType[]>(() => api.onuTypes({ is_active: 1 }), []);
-  const speedProfiles = useApiData<SpeedProfile[]>(() => api.speedProfiles({ is_active: 1 }), []);
+  const uploadProfiles = useApiData<ProfileCatalog[]>(
+    () => api.profileCatalogs({ direction: "upload", profile_kind: "tcont", is_active: true }),
+    [],
+    [],
+  );
+  const downloadProfiles = useApiData<ProfileCatalog[]>(
+    () => api.profileCatalogs({ direction: "download", profile_kind: "traffic", is_active: true }),
+    [],
+    [],
+  );
   const napPorts = useApiData<NapPort[]>(() => api.napPorts(), []);
-  const onus = useApiData<Onu[]>(() => api.onus({ environment }), []);
+  const onus = useApiData<Onu[]>(() => api.onus({ environment }), [], [environment]);
 
   const selectedPending = useMemo(
     () => pending.data.find((onu) => String(onu.id) === selectedUnauthorizedId) ?? null,
@@ -59,8 +69,10 @@ export default function ProvisioningPage() {
     setError(null);
     setMessage(null);
     const form = new FormData(event.currentTarget);
-    const speedProfileId = Number(form.get("speed_profile_id") || 0);
-    const selectedSpeedProfile = speedProfiles.data.find((profile) => profile.id === speedProfileId);
+    const uploadProfileId = Number(form.get("upload_profile_id") || 0);
+    const downloadProfileId = Number(form.get("download_profile_id") || 0);
+    const selectedUploadProfile = uploadProfiles.data.find((profile) => profile.id === uploadProfileId);
+    const selectedDownloadProfile = downloadProfiles.data.find((profile) => profile.id === downloadProfileId);
     const payload = {
       unauthorized_onu_id: Number(selectedUnauthorizedId),
       customer_name: String(form.get("customer_name") ?? ""),
@@ -73,9 +85,10 @@ export default function ProvisioningPage() {
       nap_port: Number(form.get("nap_port")),
       onu_type: String(form.get("onu_type") ?? ""),
       vlan: Number(form.get("vlan")),
-      speed_profile_id: speedProfileId || undefined,
-      speed_profile_up: selectedSpeedProfile?.upstream_profile_name ?? "",
-      speed_profile_down: selectedSpeedProfile?.downstream_profile_name ?? "",
+      upload_profile_id: uploadProfileId || undefined,
+      download_profile_id: downloadProfileId || undefined,
+      speed_profile_up: selectedUploadProfile?.name ?? "",
+      speed_profile_down: selectedDownloadProfile?.name ?? "",
       selected_onu_id: form.get("selected_onu_id") ? Number(form.get("selected_onu_id")) : undefined,
     };
     try {
@@ -252,11 +265,18 @@ export default function ProvisioningPage() {
                 items={vlans.data.filter((vlan) => vlan.is_active !== false).map((vlan) => ({ value: vlan.vlan_id, label: `${vlan.vlan_id} ${vlan.description ?? vlan.name ?? ""}` }))}
               />
               <Select
-                name="speed_profile_id"
-                label="Perfil velocidad"
-                items={speedProfiles.data
+                name="upload_profile_id"
+                label="Perfil UP"
+                items={uploadProfiles.data
                   .filter((profile) => !selectedOltId || String(profile.olt_id) === selectedOltId)
-                  .map((profile) => ({ value: profile.id, label: `${profile.name} (${profile.profile_code})` }))}
+                  .map((profile) => ({ value: profile.id, label: `${profile.name} (${profile.maximum_kbps ?? "-"} kbps)` }))}
+              />
+              <Select
+                name="download_profile_id"
+                label="Perfil DOWN"
+                items={downloadProfiles.data
+                  .filter((profile) => !selectedOltId || String(profile.olt_id) === selectedOltId)
+                  .map((profile) => ({ value: profile.id, label: `${profile.name} (${profile.pir_kbps ?? "-"} kbps)` }))}
               />
             </div>
           </Panel>

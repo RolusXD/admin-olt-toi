@@ -17,6 +17,7 @@ import type {
   OnuEvent,
   PonPort,
   PowerSample,
+  ProfileCatalog,
   ProvisioningPlan,
   ProvisioningPlanValidation,
   ProvisioningTemplate,
@@ -60,7 +61,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function toQuery(params: Record<string, string | number | undefined | null>) {
+function toQuery(params: Record<string, string | number | boolean | undefined | null>) {
   const search = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
@@ -85,6 +86,8 @@ export const api = {
   onuTypes: (params: Record<string, string | number | undefined | null> = {}) => request<OnuType[]>(`/onu-types${toQuery(params)}`),
   speedProfiles: (params: Record<string, string | number | undefined | null> = {}) =>
     request<SpeedProfile[]>(`/speed-profiles${toQuery(params)}`),
+  profileCatalogs: (params: Record<string, string | number | boolean | undefined | null> = {}) =>
+    request<ProfileCatalog[]>(`/profile-catalogs${toQuery(params)}`),
   provisioningTemplates: (params: Record<string, string | number | undefined | null> = {}) =>
     request<ProvisioningTemplate[]>(`/provisioning-templates${toQuery(params)}`),
   ponPorts: (params: { olt_id?: number | string; olt_code?: string } = {}) => request<PonPort[]>(`/pon-ports${toQuery(params)}`),
@@ -138,6 +141,8 @@ export const api = {
     request<OnuType>("/onu-types", { method: "POST", body: JSON.stringify(payload) }),
   createSpeedProfile: (payload: Record<string, unknown>) =>
     request<SpeedProfile>("/speed-profiles", { method: "POST", body: JSON.stringify(payload) }),
+  createProfileCatalog: (payload: Record<string, unknown>) =>
+    request<ProfileCatalog>("/profile-catalogs", { method: "POST", body: JSON.stringify(payload) }),
   createVlan: (payload: Record<string, unknown>) =>
     request<Vlan>("/vlans", { method: "POST", body: JSON.stringify(payload) }),
   createProvisioningTemplate: (payload: Record<string, unknown>) =>

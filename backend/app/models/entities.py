@@ -115,6 +115,9 @@ class OnuType(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
     olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(40), default="ZTE")
+    model: Mapped[str] = mapped_column(String(80), default="C300")
+    firmware: Mapped[str] = mapped_column(String(80), default="V1.2.5P3")
     name: Mapped[str] = mapped_column(String(120))
     vendor_detected: Mapped[str | None] = mapped_column(String(80))
     model_detected: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -122,6 +125,9 @@ class OnuType(Base):
     max_tcont: Mapped[int | None] = mapped_column(Integer)
     max_gemport: Mapped[int | None] = mapped_column(Integer)
     max_ports: Mapped[int | None] = mapped_column(Integer)
+    max_switch_perslot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_flow_perswitch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_iphost: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ethernet_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
     wifi_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pots_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -151,13 +157,57 @@ class SpeedProfile(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
     olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(40), default="ZTE")
+    model: Mapped[str] = mapped_column(String(80), default="C300")
+    firmware: Mapped[str] = mapped_column(String(80), default="V1.2.5P3")
     name: Mapped[str] = mapped_column(String(120))
     profile_code: Mapped[str] = mapped_column(String(120))
     upstream_profile_name: Mapped[str] = mapped_column(String(120))
     downstream_profile_name: Mapped[str] = mapped_column(String(120))
+    upload_profile_id: Mapped[int | None] = mapped_column(ForeignKey("profile_catalogs.id", ondelete="SET NULL"), nullable=True)
+    download_profile_id: Mapped[int | None] = mapped_column(ForeignKey("profile_catalogs.id", ondelete="SET NULL"), nullable=True)
     upstream_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     downstream_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     technology: Mapped[str] = mapped_column(String(30), default="GPON")
+    source: Mapped[str] = mapped_column(String(40), default="imported")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    olt: Mapped[Olt] = relationship()
+    upload_profile: Mapped["ProfileCatalog | None"] = relationship(foreign_keys=[upload_profile_id])
+    download_profile: Mapped["ProfileCatalog | None"] = relationship(foreign_keys=[download_profile_id])
+
+    @property
+    def olt_code(self) -> str | None:
+        return self.olt.olt_code if self.olt else self.olt_code_snapshot
+
+    @property
+    def olt_name(self) -> str | None:
+        return self.olt.name if self.olt else None
+
+    @property
+    def olt_environment(self) -> str | None:
+        return self.olt.environment if self.olt else None
+
+
+class ProfileCatalog(Base, TimestampMixin):
+    __tablename__ = "profile_catalogs"
+    __table_args__ = (UniqueConstraint("olt_id", "profile_kind", "name", name="uq_profile_catalogs_olt_kind_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
+    olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(40), default="ZTE")
+    model: Mapped[str] = mapped_column(String(80), default="C300")
+    firmware: Mapped[str] = mapped_column(String(80), default="V1.2.5P3")
+    direction: Mapped[str] = mapped_column(String(30))
+    profile_kind: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(120))
+    type_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fixed_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assured_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    maximum_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sir_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pir_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String(40), default="imported")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -430,6 +480,8 @@ class ProvisioningPlan(Base, TimestampMixin):
     speed_profile_up: Mapped[str] = mapped_column(String(120))
     speed_profile_down: Mapped[str] = mapped_column(String(120))
     speed_profile_id: Mapped[int | None] = mapped_column(ForeignKey("speed_profiles.id", ondelete="SET NULL"), nullable=True)
+    upload_profile_id: Mapped[int | None] = mapped_column(ForeignKey("profile_catalogs.id", ondelete="SET NULL"), nullable=True)
+    download_profile_id: Mapped[int | None] = mapped_column(ForeignKey("profile_catalogs.id", ondelete="SET NULL"), nullable=True)
     selected_onu_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     suggested_onu_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     generated_cli: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -444,6 +496,8 @@ class ProvisioningPlan(Base, TimestampMixin):
     zone: Mapped[Zone] = relationship()
     nap: Mapped[Nap] = relationship()
     speed_profile: Mapped[SpeedProfile | None] = relationship()
+    upload_profile: Mapped[ProfileCatalog | None] = relationship(foreign_keys=[upload_profile_id])
+    download_profile: Mapped[ProfileCatalog | None] = relationship(foreign_keys=[download_profile_id])
     validation_result: Mapped["ProvisioningValidationResult | None"] = relationship(
         back_populates="plan",
         cascade="all, delete-orphan",

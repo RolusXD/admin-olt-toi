@@ -5,10 +5,24 @@ import pytest
 
 from app.api.routes.nap_ports import reserve_nap_port, release_nap_port
 from app.api.routes.onu_types import create_onu_type, deactivate_onu_type
+from app.api.routes.profile_catalogs import create_profile_catalog, deactivate_profile_catalog
 from app.api.routes.speed_profiles import create_speed_profile, deactivate_speed_profile
 from app.models.base import Base
-from app.models.entities import GponProfile, Nap, NapPort, Olt, Onu, OnuType, ProvisioningTemplate, SpeedProfile, UnauthorizedOnu, Vlan, Zone
-from app.schemas.entities import OnuTypeCreate, ProvisioningPlanCreate, SpeedProfileCreate
+from app.models.entities import (
+    GponProfile,
+    Nap,
+    NapPort,
+    Olt,
+    Onu,
+    OnuType,
+    ProfileCatalog,
+    ProvisioningTemplate,
+    SpeedProfile,
+    UnauthorizedOnu,
+    Vlan,
+    Zone,
+)
+from app.schemas.entities import OnuTypeCreate, ProfileCatalogCreate, ProvisioningPlanCreate, SpeedProfileCreate
 from app.services.provisioning_service import ProvisioningService
 
 
@@ -47,6 +61,28 @@ def catalog(db_session):
             Vlan(olt_id=olt.id, olt_code_snapshot=olt.olt_code, vlan_id=200, description="FTTH", is_active=True, source="manual"),
             GponProfile(olt_id=olt.id, profile_type="tcont", name="SMARTOLT-1G-UP"),
             GponProfile(olt_id=olt.id, profile_type="traffic", name="SMARTOLT-1G-DOWN"),
+            ProfileCatalog(
+                olt_id=olt.id,
+                olt_code_snapshot=olt.olt_code,
+                vendor="ZTE",
+                model="C300",
+                firmware="V1.2.5P3",
+                direction="upload",
+                profile_kind="tcont",
+                name="SMARTOLT-1G-UP",
+                is_active=True,
+            ),
+            ProfileCatalog(
+                olt_id=olt.id,
+                olt_code_snapshot=olt.olt_code,
+                vendor="ZTE",
+                model="C300",
+                firmware="V1.2.5P3",
+                direction="download",
+                profile_kind="traffic",
+                name="SMARTOLT-1G-DOWN",
+                is_active=True,
+            ),
             ProvisioningTemplate(
                 name="default",
                 vendor="ZTE",
@@ -104,6 +140,25 @@ def test_crud_speed_profile_and_deactivate(db_session, catalog):
     assert deactivated.is_active is False
 
 
+def test_crud_profile_catalog_and_deactivate(db_session, catalog):
+    created = create_profile_catalog(
+        ProfileCatalogCreate(
+            olt_id=catalog["olt"].id,
+            direction="upload",
+            profile_kind="tcont",
+            name="MANUAL-UP",
+            maximum_kbps=512000,
+        ),
+        db_session,
+    )
+    assert created.source == "manual"
+    assert created.direction == "upload"
+
+    deactivated = deactivate_profile_catalog(created.id, db_session)
+
+    assert deactivated.is_active is False
+
+
 def test_nap_port_reserve_and_release(db_session, catalog):
     port = db_session.scalar(select(NapPort).where(NapPort.nap_id == catalog["nap"].id, NapPort.port_number == 1))
 
@@ -119,10 +174,15 @@ def test_provisioning_uses_speed_profile_and_blocks_occupied_nap_port(db_session
     speed = SpeedProfile(
         olt_id=catalog["olt"].id,
         olt_code_snapshot=catalog["olt"].olt_code,
+        vendor="ZTE",
+        model="C300",
+        firmware="V1.2.5P3",
         name="Plan 1G",
         profile_code="TOI-1G",
         upstream_profile_name="SMARTOLT-1G-UP",
         downstream_profile_name="SMARTOLT-1G-DOWN",
+        upload_profile_id=db_session.scalar(select(ProfileCatalog).where(ProfileCatalog.name == "SMARTOLT-1G-UP")).id,
+        download_profile_id=db_session.scalar(select(ProfileCatalog).where(ProfileCatalog.name == "SMARTOLT-1G-DOWN")).id,
         is_active=True,
     )
     db_session.add_all([onu_type, speed])

@@ -16,6 +16,7 @@ from app.models.entities import (
     Olt,
     Onu,
     OnuType,
+    ProfileCatalog,
     ProvisioningPlan,
     ProvisioningTemplate,
     ProvisioningValidationResult,
@@ -93,8 +94,12 @@ class ProvisioningService:
         if not olt:
             raise HTTPException(status_code=404, detail="OLT no encontrada")
         speed_profile = self.db.get(SpeedProfile, payload.speed_profile_id) if payload.speed_profile_id else None
-        speed_profile_up = speed_profile.upstream_profile_name if speed_profile else payload.speed_profile_up
-        speed_profile_down = speed_profile.downstream_profile_name if speed_profile else payload.speed_profile_down
+        upload_profile = self.db.get(ProfileCatalog, payload.upload_profile_id) if payload.upload_profile_id else None
+        download_profile = self.db.get(ProfileCatalog, payload.download_profile_id) if payload.download_profile_id else None
+        speed_profile_up = upload_profile.name if upload_profile else speed_profile.upstream_profile_name if speed_profile else payload.speed_profile_up
+        speed_profile_down = (
+            download_profile.name if download_profile else speed_profile.downstream_profile_name if speed_profile else payload.speed_profile_down
+        )
 
         plan = ProvisioningPlan(
             olt_id=olt.id,
@@ -115,6 +120,8 @@ class ProvisioningService:
             speed_profile_up=speed_profile_up,
             speed_profile_down=speed_profile_down,
             speed_profile_id=speed_profile.id if speed_profile else None,
+            upload_profile_id=upload_profile.id if upload_profile else None,
+            download_profile_id=download_profile.id if download_profile else None,
             selected_onu_id=payload.selected_onu_id,
             status="draft",
         )
@@ -231,26 +238,36 @@ class ProvisioningService:
             else:
                 plan.speed_profile_up = speed_profile.upstream_profile_name
                 plan.speed_profile_down = speed_profile.downstream_profile_name
+                plan.upload_profile_id = plan.upload_profile_id or speed_profile.upload_profile_id
+                plan.download_profile_id = plan.download_profile_id or speed_profile.download_profile_id
 
-        up_profile = self.db.scalar(
-            select(GponProfile).where(
-                GponProfile.olt_id == plan.olt_id,
-                GponProfile.profile_type == "tcont",
-                GponProfile.name == plan.speed_profile_up,
-            )
+        up_catalog = self._resolve_profile_catalog(
+            plan,
+            olt,
+            profile_id=plan.upload_profile_id,
+            name=plan.speed_profile_up,
+            direction="upload",
+            profile_kind="tcont",
         )
-        if not up_profile:
-            errors.append(f"El perfil UP {plan.speed_profile_up} no existe para esta OLT.")
+        if up_catalog:
+            plan.upload_profile_id = up_catalog.id
+            plan.speed_profile_up = up_catalog.name
+        else:
+            errors.append(f"El perfil UP {plan.speed_profile_up or '-'} no existe, no esta activo o no es compatible con esta OLT.")
 
-        down_profile = self.db.scalar(
-            select(GponProfile).where(
-                GponProfile.olt_id == plan.olt_id,
-                GponProfile.profile_type == "traffic",
-                GponProfile.name == plan.speed_profile_down,
-            )
+        down_catalog = self._resolve_profile_catalog(
+            plan,
+            olt,
+            profile_id=plan.download_profile_id,
+            name=plan.speed_profile_down,
+            direction="download",
+            profile_kind="traffic",
         )
-        if not down_profile:
-            errors.append(f"El perfil DOWN {plan.speed_profile_down} no existe para esta OLT.")
+        if down_catalog:
+            plan.download_profile_id = down_catalog.id
+            plan.speed_profile_down = down_catalog.name
+        else:
+            errors.append(f"El perfil DOWN {plan.speed_profile_down or '-'} no existe, no esta activo o no es compatible con esta OLT.")
 
         registered = self.db.scalar(select(Onu).where(Onu.olt_id == plan.olt_id, Onu.serial_number == plan.serial_number))
         if registered:
@@ -291,9 +308,9 @@ class ProvisioningService:
         elif selected_type and detected_type and selected_type != detected_type:
             warnings.append(f"Tipo ONU detectado {detected_type} difiere del seleccionado {selected_type}.")
 
-        onu_type = self.db.scalar(select(OnuType).where(OnuType.olt_id == plan.olt_id, OnuType.name == plan.onu_type, OnuType.is_active.is_(True)))
+        onu_type = self._resolve_onu_type(plan, olt)
         if not onu_type:
-            warnings.append(f"El tipo ONU {plan.onu_type} no existe o no esta activo en el catalogo para esta OLT.")
+            errors.append(f"El tipo ONU {plan.onu_type} no existe, no esta activo o no es compatible con vendor/model/firmware de la OLT.")
 
         if not template:
             errors.append("No existe ProvisioningTemplate activo compatible con vendor/model/firmware de la OLT.")
@@ -382,6 +399,50 @@ class ProvisioningService:
                 ids.add(int(match.group(1)))
         return sorted(ids)
 
+    def _resolve_profile_catalog(
+        self,
+        plan: ProvisioningPlan,
+        olt: Olt | None,
+        *,
+        profile_id: int | None,
+        name: str | None,
+        direction: str,
+        profile_kind: str,
+    ) -> ProfileCatalog | None:
+        statement = select(ProfileCatalog).where(
+            ProfileCatalog.olt_id == plan.olt_id,
+            ProfileCatalog.direction == direction,
+            ProfileCatalog.profile_kind == profile_kind,
+            ProfileCatalog.is_active.is_(True),
+        )
+        if olt:
+            statement = statement.where(
+                ProfileCatalog.vendor == olt.vendor,
+                ProfileCatalog.model == olt.model,
+                ProfileCatalog.firmware == olt.firmware,
+            )
+        if profile_id:
+            statement = statement.where(ProfileCatalog.id == profile_id)
+        else:
+            if not name:
+                return None
+            statement = statement.where(ProfileCatalog.name == name)
+        return self.db.scalar(statement.limit(1))
+
+    def _resolve_onu_type(self, plan: ProvisioningPlan, olt: Olt | None) -> OnuType | None:
+        statement = select(OnuType).where(
+            OnuType.olt_id == plan.olt_id,
+            OnuType.name == plan.onu_type,
+            OnuType.is_active.is_(True),
+        )
+        if olt:
+            statement = statement.where(
+                OnuType.vendor == olt.vendor,
+                OnuType.model == olt.model,
+                OnuType.firmware == olt.firmware,
+            )
+        return self.db.scalar(statement.limit(1))
+
     @staticmethod
     def next_available_onu_id(occupied_onu_ids: list[int], max_onu_id: int = 128) -> int | None:
         occupied = set(occupied_onu_ids)
@@ -457,6 +518,8 @@ def plan_to_dict(plan: ProvisioningPlan) -> dict:
         "speed_profile_up": plan.speed_profile_up,
         "speed_profile_down": plan.speed_profile_down,
         "speed_profile_id": plan.speed_profile_id,
+        "upload_profile_id": plan.upload_profile_id,
+        "download_profile_id": plan.download_profile_id,
         "selected_onu_id": plan.selected_onu_id,
         "suggested_onu_id": plan.suggested_onu_id,
         "generated_cli": plan.generated_cli,

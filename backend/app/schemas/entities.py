@@ -202,6 +202,9 @@ class VlanUpdate(BaseModel):
 
 class OnuTypeCreate(BaseModel):
     olt_id: int
+    vendor: str = "ZTE"
+    model: str = "C300"
+    firmware: str = "V1.2.5P3"
     name: str
     vendor_detected: str | None = None
     model_detected: str | None = None
@@ -209,6 +212,9 @@ class OnuTypeCreate(BaseModel):
     max_tcont: int | None = None
     max_gemport: int | None = None
     max_ports: int | None = None
+    max_switch_perslot: int | None = None
+    max_flow_perswitch: int | None = None
+    max_iphost: int | None = None
     ethernet_ports: int | None = None
     wifi_ports: int | None = None
     pots_ports: int | None = None
@@ -219,6 +225,9 @@ class OnuTypeCreate(BaseModel):
 
 
 class OnuTypeUpdate(BaseModel):
+    vendor: str | None = None
+    model: str | None = None
+    firmware: str | None = None
     name: str | None = None
     vendor_detected: str | None = None
     model_detected: str | None = None
@@ -226,6 +235,9 @@ class OnuTypeUpdate(BaseModel):
     max_tcont: int | None = None
     max_gemport: int | None = None
     max_ports: int | None = None
+    max_switch_perslot: int | None = None
+    max_flow_perswitch: int | None = None
+    max_iphost: int | None = None
     ethernet_ports: int | None = None
     wifi_ports: int | None = None
     pots_ports: int | None = None
@@ -245,10 +257,15 @@ class OnuTypeRead(OnuTypeCreate):
 
 class SpeedProfileCreate(BaseModel):
     olt_id: int
+    vendor: str = "ZTE"
+    model: str = "C300"
+    firmware: str = "V1.2.5P3"
     name: str
     profile_code: str
     upstream_profile_name: str
     downstream_profile_name: str
+    upload_profile_id: int | None = None
+    download_profile_id: int | None = None
     upstream_kbps: int | None = None
     downstream_kbps: int | None = None
     technology: str = "GPON"
@@ -258,10 +275,15 @@ class SpeedProfileCreate(BaseModel):
 
 
 class SpeedProfileUpdate(BaseModel):
+    vendor: str | None = None
+    model: str | None = None
+    firmware: str | None = None
     name: str | None = None
     profile_code: str | None = None
     upstream_profile_name: str | None = None
     downstream_profile_name: str | None = None
+    upload_profile_id: int | None = None
+    download_profile_id: int | None = None
     upstream_kbps: int | None = None
     downstream_kbps: int | None = None
     technology: str | None = None
@@ -300,6 +322,53 @@ class NapPortUpdate(BaseModel):
 
 class NapPortRead(NapPortCreate):
     id: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProfileCatalogCreate(BaseModel):
+    olt_id: int
+    vendor: str = "ZTE"
+    model: str = "C300"
+    firmware: str = "V1.2.5P3"
+    direction: str
+    profile_kind: str
+    name: str
+    type_value: int | None = None
+    fixed_kbps: int | None = None
+    assured_kbps: int | None = None
+    maximum_kbps: int | None = None
+    sir_kbps: int | None = None
+    pir_kbps: int | None = None
+    source: str = "manual"
+    is_active: bool = True
+    notes: str | None = None
+
+
+class ProfileCatalogUpdate(BaseModel):
+    vendor: str | None = None
+    model: str | None = None
+    firmware: str | None = None
+    direction: str | None = None
+    profile_kind: str | None = None
+    name: str | None = None
+    type_value: int | None = None
+    fixed_kbps: int | None = None
+    assured_kbps: int | None = None
+    maximum_kbps: int | None = None
+    sir_kbps: int | None = None
+    pir_kbps: int | None = None
+    is_active: bool | None = None
+    notes: str | None = None
+
+
+class ProfileCatalogRead(ProfileCatalogCreate):
+    id: int
+    olt_code: str | None = None
+    olt_name: str | None = None
+    olt_environment: str | None = None
+    olt_code_snapshot: str | None = None
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
@@ -570,6 +639,8 @@ class ProvisioningPlanCreate(BaseModel):
     speed_profile_up: str = ""
     speed_profile_down: str = ""
     speed_profile_id: int | None = None
+    upload_profile_id: int | None = None
+    download_profile_id: int | None = None
     selected_onu_id: int | None = Field(default=None, ge=1)
 
     @field_validator("customer_name", "onu_type")
@@ -601,6 +672,8 @@ class ProvisioningPlanRead(BaseModel):
     speed_profile_up: str
     speed_profile_down: str
     speed_profile_id: int | None = None
+    upload_profile_id: int | None = None
+    download_profile_id: int | None = None
     selected_onu_id: int | None = None
     suggested_onu_id: int | None = None
     generated_cli: str | None = None

@@ -74,7 +74,43 @@ def test_extracts_gpon_profiles_and_onu_types(parsed_config):
     onu_type = next(item for item in parsed_config.onu_types if item.name == "BTPON")
 
     assert tcont.upstream_rate == 1048064
+    assert tcont.type_value == 5
+    assert tcont.fixed_kbps == 64
+    assert tcont.assured_kbps == 64
+    assert tcont.maximum_kbps == 1048064
     assert traffic.downstream_rate == 1048064
+    assert traffic.sir_kbps == 1048064
+    assert traffic.pir_kbps == 1048064
     assert onu_type.max_tcont == 8
     assert onu_type.max_gemport == 32
     assert onu_type.max_ports == 8
+    assert onu_type.max_switch_perslot == 8
+    assert onu_type.max_flow_perswitch == 8
+    assert onu_type.max_iphost == 5
+    assert onu_type.ethernet_ports == 1
+
+
+def test_extracts_onu_type_interfaces_and_directional_profile_catalogs(parsed_config):
+    zte_f660 = next(item for item in parsed_config.onu_types if item.name == "ZTE-F660")
+    azul = next(item for item in parsed_config.onu_types if item.name == "azul")
+    upload = next(
+        profile
+        for profile in parsed_config.profile_catalogs
+        if profile.direction == "upload" and profile.profile_kind == "tcont" and profile.name == "SMARTOLT-1G-UP"
+    )
+    download = next(
+        profile
+        for profile in parsed_config.profile_catalogs
+        if profile.direction == "download" and profile.profile_kind == "traffic" and profile.name == "SMARTOLT-1G-DOWN"
+    )
+
+    assert len(parsed_config.profile_catalogs) == 28
+    assert zte_f660.ethernet_ports == 4
+    assert zte_f660.pots_ports == 2
+    assert zte_f660.wifi_ports == 4
+    assert azul.ethernet_ports == 2
+    assert azul.rf_ports == 1
+    assert azul.wifi_ports == 1
+    assert upload.type_value == 5
+    assert upload.maximum_kbps == 1048064
+    assert download.pir_kbps == 1048064

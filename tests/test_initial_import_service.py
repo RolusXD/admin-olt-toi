@@ -7,7 +7,22 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy import create_engine
 
 from app.models.base import Base
-from app.models.entities import ConfigSnapshot, DriverCommandLog, GponProfile, ImportJob, Nap, NapPort, Olt, Onu, OnuType, PonPort, SpeedProfile, Vlan, Zone
+from app.models.entities import (
+    ConfigSnapshot,
+    DriverCommandLog,
+    GponProfile,
+    ImportJob,
+    Nap,
+    NapPort,
+    Olt,
+    Onu,
+    OnuType,
+    PonPort,
+    ProfileCatalog,
+    SpeedProfile,
+    Vlan,
+    Zone,
+)
 from app.api.routes.onus import list_onus
 from app.schemas.entities import OltCreate
 from app.schemas.entities import OnuRead
@@ -66,6 +81,7 @@ def productive_counts(db_session) -> dict:
         "vlans": scalar_count(db_session, Vlan),
         "onu_types": scalar_count(db_session, OnuType),
         "gpon_profiles": scalar_count(db_session, GponProfile),
+        "profile_catalogs": scalar_count(db_session, ProfileCatalog),
         "zones": scalar_count(db_session, Zone),
         "naps": scalar_count(db_session, Nap),
     }
@@ -105,11 +121,39 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert scalar_count(db_session, Vlan) == 215
     assert scalar_count(db_session, OnuType) == 13
     assert scalar_count(db_session, GponProfile) == 28
+    assert scalar_count(db_session, ProfileCatalog) == 28
     assert scalar_count(db_session, SpeedProfile) > 0
 
     vlan_200 = db_session.scalar(select(Vlan).where(Vlan.olt_id == olt.id, Vlan.vlan_id == 200))
     assert vlan_200 is not None
     assert vlan_200.description == "FTTH-TH1"
+
+    onu_type = db_session.scalar(select(OnuType).where(OnuType.olt_id == olt.id, OnuType.name == "BTPON"))
+    assert onu_type is not None
+    assert onu_type.vendor == "ZTE"
+    assert onu_type.model == "C300"
+    assert onu_type.firmware == "V1.2.5P3"
+    assert onu_type.max_switch_perslot == 8
+    assert onu_type.max_flow_perswitch == 8
+    assert onu_type.max_iphost == 5
+
+    upload_catalog = db_session.scalar(
+        select(ProfileCatalog).where(ProfileCatalog.olt_id == olt.id, ProfileCatalog.direction == "upload", ProfileCatalog.name == "SMARTOLT-1G-UP")
+    )
+    download_catalog = db_session.scalar(
+        select(ProfileCatalog).where(
+            ProfileCatalog.olt_id == olt.id,
+            ProfileCatalog.direction == "download",
+            ProfileCatalog.name == "SMARTOLT-1G-DOWN",
+        )
+    )
+    assert upload_catalog is not None
+    assert upload_catalog.vendor == "ZTE"
+    assert upload_catalog.model == "C300"
+    assert upload_catalog.firmware == "V1.2.5P3"
+    assert upload_catalog.maximum_kbps == 1048064
+    assert download_catalog is not None
+    assert download_catalog.pir_kbps == 1048064
 
     zone = db_session.scalar(select(Zone).where(Zone.name == "Lagunas"))
     assert zone is not None
@@ -140,10 +184,19 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert occupied_port.status == "occupied"
     assert occupied_port.onu_id == onu.id
 
+    upload_catalog.source = "manual"
+    upload_catalog.is_active = False
+    upload_catalog.maximum_kbps = 123
+    db_session.commit()
+
     counts_before_repeat = productive_counts(db_session)
     service.confirm_import(preview["import_job_id"])
 
     assert productive_counts(db_session) == counts_before_repeat
+    db_session.refresh(upload_catalog)
+    assert upload_catalog.source == "manual"
+    assert upload_catalog.is_active is False
+    assert upload_catalog.maximum_kbps == 123
     db_session.refresh(olt)
     assert olt.initial_import_status == "confirmed"
     assert olt.last_import_job_id == preview["import_job_id"]

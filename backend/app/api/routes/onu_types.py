@@ -13,6 +13,9 @@ def list_onu_types(
     db: DbSession,
     olt_id: int | None = None,
     olt_code: str | None = None,
+    vendor: str | None = None,
+    model: str | None = None,
+    firmware: str | None = None,
     technology: str | None = None,
     source: str | None = None,
     is_active: bool | None = Query(default=None),
@@ -23,6 +26,12 @@ def list_onu_types(
         statement = statement.join(Olt, OnuType.olt_id == Olt.id).where(Olt.olt_code == olt_code.strip().upper())
     if olt_id is not None:
         statement = statement.where(OnuType.olt_id == olt_id)
+    if vendor:
+        statement = statement.where(OnuType.vendor == vendor)
+    if model:
+        statement = statement.where(OnuType.model == model)
+    if firmware:
+        statement = statement.where(OnuType.firmware == firmware)
     if technology:
         statement = statement.where(OnuType.technology == technology)
     if source:

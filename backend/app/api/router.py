@@ -12,6 +12,7 @@ from app.api.routes import (
     onus,
     onu_types,
     pon_ports,
+    profile_catalogs,
     provisioning,
     provisioning_templates,
     speed_profiles,
@@ -33,6 +34,7 @@ api_router.include_router(onus.router)
 api_router.include_router(onu_types.router)
 api_router.include_router(vlans.router)
 api_router.include_router(pon_ports.router)
+api_router.include_router(profile_catalogs.router)
 api_router.include_router(provisioning.router)
 api_router.include_router(provisioning_templates.router)
 api_router.include_router(speed_profiles.router)

@@ -16,15 +16,42 @@ class ParsedGponProfile:
     name: str
     upstream_rate: int | None = None
     downstream_rate: int | None = None
+    type_value: int | None = None
+    fixed_kbps: int | None = None
+    assured_kbps: int | None = None
+    maximum_kbps: int | None = None
+    sir_kbps: int | None = None
+    pir_kbps: int | None = None
+
+
+@dataclass(frozen=True)
+class ParsedProfileCatalog:
+    direction: str
+    profile_kind: str
+    name: str
+    type_value: int | None = None
+    fixed_kbps: int | None = None
+    assured_kbps: int | None = None
+    maximum_kbps: int | None = None
+    sir_kbps: int | None = None
+    pir_kbps: int | None = None
 
 
 @dataclass(frozen=True)
 class ParsedOnuType:
     name: str
     vendor_detected: str | None = None
+    technology: str = "gpon"
     max_tcont: int | None = None
     max_gemport: int | None = None
     max_ports: int | None = None
+    max_switch_perslot: int | None = None
+    max_flow_perswitch: int | None = None
+    max_iphost: int | None = None
+    ethernet_ports: int | None = None
+    wifi_ports: int | None = None
+    pots_ports: int | None = None
+    rf_ports: int | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +95,7 @@ class ParsedOnu:
 class RunningConfigParseResult:
     vlans: list[ParsedVlan]
     gpon_profiles: list[ParsedGponProfile]
+    profile_catalogs: list[ParsedProfileCatalog]
     onu_types: list[ParsedOnuType]
     pon_ports: list[ParsedPonPort]
     onus: list[ParsedOnu]
@@ -79,6 +107,7 @@ class RunningConfigParseResult:
         return {
             "vlans": len(self.vlans),
             "gpon_profiles": len(self.gpon_profiles),
+            "profile_catalogs": len(self.profile_catalogs),
             "onu_types": len(self.onu_types),
             "pon_ports": len(self.pon_ports),
             "onus": len(self.onus),
@@ -92,10 +121,11 @@ def parse_running_config(raw_config: str) -> RunningConfigParseResult:
     lines = raw_config.splitlines()
     vlans = _parse_vlans(lines)
     profiles = _parse_profiles(lines)
+    profile_catalogs = _parse_profile_catalogs(profiles)
     onu_types = _parse_onu_types(lines)
     pon_ports = _parse_pon_ports(lines)
     onus, warnings = _parse_onus(lines)
-    return RunningConfigParseResult(vlans, profiles, onu_types, pon_ports, onus, warnings)
+    return RunningConfigParseResult(vlans, profiles, profile_catalogs, onu_types, pon_ports, onus, warnings)
 
 
 def _parse_vlans(lines: list[str]) -> list[ParsedVlan]:
@@ -150,11 +180,17 @@ def _parse_profiles(lines: list[str]) -> list[ParsedGponProfile]:
                 "name": match.group(2).strip(),
                 "upstream_rate": None,
                 "downstream_rate": None,
+                "type_value": _value_after_keyword(tail, "type"),
+                "fixed_kbps": _value_after_keyword(tail, "fixed"),
+                "assured_kbps": _value_after_keyword(tail, "assured"),
+                "maximum_kbps": _value_after_keyword(tail, "maximum"),
+                "sir_kbps": _value_after_keyword(tail, "sir"),
+                "pir_kbps": _value_after_keyword(tail, "pir"),
             }
             if profile_type == "tcont":
-                current["upstream_rate"] = _value_after_keyword(tail, "maximum") or _last_int(tail)
+                current["upstream_rate"] = current["maximum_kbps"] or _last_int(tail)
             if profile_type == "traffic":
-                current["downstream_rate"] = _value_after_keyword(tail, "pir") or _last_int(tail)
+                current["downstream_rate"] = current["pir_kbps"] or _last_int(tail)
             continue
         if current and re.search(r"\bupstream\b|\bup\b", line, re.I):
             rate = _value_after_keyword(line, "maximum") or _last_int(line)
@@ -174,29 +210,113 @@ def _parse_profiles(lines: list[str]) -> list[ParsedGponProfile]:
 
 def _parse_onu_types(lines: list[str]) -> list[ParsedOnuType]:
     by_name: dict[str, dict] = {}
+    interfaces: dict[str, dict[str, set[str]]] = {}
     for raw in lines:
         line = raw.strip()
-        match = re.match(r"onu-type\s+(\S+)\s+gpon(.*)", line, re.I)
+        match = re.match(r"onu-type\s+(\S+)\s+(\S+)(.*)", line, re.I)
         if match:
             name = match.group(1)
+            technology = match.group(2).lower()
             current = by_name.setdefault(
                 name,
                 {
                     "name": name,
                     "vendor_detected": _detect_vendor(name),
+                    "technology": technology,
                     "max_tcont": None,
                     "max_gemport": None,
                     "max_ports": None,
+                    "max_switch_perslot": None,
+                    "max_flow_perswitch": None,
+                    "max_iphost": None,
+                    "ethernet_ports": None,
+                    "wifi_ports": None,
+                    "pots_ports": None,
+                    "rf_ports": None,
                 },
             )
-            tail = match.group(2)
+            tail = match.group(3)
+            current["technology"] = technology
             if "max-tcont" in tail.lower():
                 current["max_tcont"] = _last_int(tail) or current["max_tcont"]
             if "max-gemport" in tail.lower():
                 current["max_gemport"] = _last_int(tail) or current["max_gemport"]
-            if "max-switch-perslot" in tail.lower() or "max-port" in tail.lower():
+            if "max-switch-perslot" in tail.lower():
+                current["max_switch_perslot"] = _last_int(tail) or current["max_switch_perslot"]
+                current["max_ports"] = current["max_switch_perslot"]
+            if "max-flow-perswitch" in tail.lower():
+                current["max_flow_perswitch"] = _last_int(tail) or current["max_flow_perswitch"]
+            if "max-iphost" in tail.lower():
+                current["max_iphost"] = _last_int(tail) or current["max_iphost"]
+            if "max-port" in tail.lower():
                 current["max_ports"] = _last_int(tail) or current["max_ports"]
+            continue
+        if_match = re.match(r"onu-type-if\s+(\S+)\s+(\S+)", line, re.I)
+        if if_match:
+            name = if_match.group(1)
+            iface = if_match.group(2).lower()
+            current = by_name.setdefault(
+                name,
+                {
+                    "name": name,
+                    "vendor_detected": _detect_vendor(name),
+                    "technology": "gpon",
+                    "max_tcont": None,
+                    "max_gemport": None,
+                    "max_ports": None,
+                    "max_switch_perslot": None,
+                    "max_flow_perswitch": None,
+                    "max_iphost": None,
+                    "ethernet_ports": None,
+                    "wifi_ports": None,
+                    "pots_ports": None,
+                    "rf_ports": None,
+                },
+            )
+            buckets = interfaces.setdefault(name, {"eth": set(), "wifi": set(), "pots": set(), "rf": set()})
+            if iface.startswith("eth_"):
+                buckets["eth"].add(iface)
+            elif iface.startswith("wifi_"):
+                buckets["wifi"].add(iface)
+            elif iface.startswith("pots_"):
+                buckets["pots"].add(iface)
+            elif iface.startswith("rf_"):
+                buckets["rf"].add(iface)
+    for name, buckets in interfaces.items():
+        current = by_name[name]
+        current["ethernet_ports"] = len(buckets["eth"])
+        current["wifi_ports"] = len(buckets["wifi"])
+        current["pots_ports"] = len(buckets["pots"])
+        current["rf_ports"] = len(buckets["rf"])
     return [ParsedOnuType(**value) for value in by_name.values()]
+
+
+def _parse_profile_catalogs(profiles: list[ParsedGponProfile]) -> list[ParsedProfileCatalog]:
+    catalogs: list[ParsedProfileCatalog] = []
+    for profile in profiles:
+        if profile.profile_type == "tcont":
+            catalogs.append(
+                ParsedProfileCatalog(
+                    direction="upload",
+                    profile_kind="tcont",
+                    name=profile.name,
+                    type_value=profile.type_value,
+                    fixed_kbps=profile.fixed_kbps,
+                    assured_kbps=profile.assured_kbps,
+                    maximum_kbps=profile.maximum_kbps or profile.upstream_rate,
+                )
+            )
+        elif profile.profile_type == "traffic":
+            catalogs.append(
+                ParsedProfileCatalog(
+                    direction="download",
+                    profile_kind="traffic",
+                    name=profile.name,
+                    sir_kbps=profile.sir_kbps,
+                    pir_kbps=profile.pir_kbps or profile.downstream_rate,
+                )
+            )
+    return catalogs
 
 
 def _parse_pon_ports(lines: list[str]) -> list[ParsedPonPort]:

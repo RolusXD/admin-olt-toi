@@ -17,6 +17,7 @@ from app.models.entities import (
     OnuPowerHistory,
     OnuType,
     PonPort,
+    ProfileCatalog,
     ProvisioningPlan,
     ProvisioningTemplate,
     ProvisioningValidationResult,
@@ -58,6 +59,10 @@ class OnuTypeRepository(Repository[OnuType]):
 
 class SpeedProfileRepository(Repository[SpeedProfile]):
     model = SpeedProfile
+
+
+class ProfileCatalogRepository(Repository[ProfileCatalog]):
+    model = ProfileCatalog
 
 
 class NapRepository(Repository[Nap]):

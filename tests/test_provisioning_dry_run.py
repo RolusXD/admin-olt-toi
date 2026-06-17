@@ -4,7 +4,20 @@ from sqlalchemy.pool import StaticPool
 import pytest
 
 from app.models.base import Base
-from app.models.entities import GponProfile, Nap, NapPort, Olt, Onu, OnuType, ProvisioningPlan, ProvisioningTemplate, UnauthorizedOnu, Vlan, Zone
+from app.models.entities import (
+    GponProfile,
+    Nap,
+    NapPort,
+    Olt,
+    Onu,
+    OnuType,
+    ProfileCatalog,
+    ProvisioningPlan,
+    ProvisioningTemplate,
+    UnauthorizedOnu,
+    Vlan,
+    Zone,
+)
 from app.schemas.entities import ProvisioningPlanCreate
 from app.services.provisioning_service import ProvisioningService
 
@@ -71,6 +84,28 @@ def catalog(db_session):
             Vlan(olt_id=olt.id, vlan_id=200, name="FTTH-TH1", description="FTTH-TH1"),
             GponProfile(olt_id=olt.id, profile_type="tcont", name="SMARTOLT-1G-UP", upstream_rate=None, downstream_rate=None),
             GponProfile(olt_id=olt.id, profile_type="traffic", name="SMARTOLT-1G-DOWN", upstream_rate=None, downstream_rate=None),
+            ProfileCatalog(
+                olt_id=olt.id,
+                olt_code_snapshot=olt.olt_code,
+                vendor="ZTE",
+                model="C300",
+                firmware="V1.2.5P3",
+                direction="upload",
+                profile_kind="tcont",
+                name="SMARTOLT-1G-UP",
+                is_active=True,
+            ),
+            ProfileCatalog(
+                olt_id=olt.id,
+                olt_code_snapshot=olt.olt_code,
+                vendor="ZTE",
+                model="C300",
+                firmware="V1.2.5P3",
+                direction="download",
+                profile_kind="traffic",
+                name="SMARTOLT-1G-DOWN",
+                is_active=True,
+            ),
             OnuType(olt_id=olt.id, name="VSOL", vendor_detected="VSOL", max_tcont=None, max_gemport=None, max_ports=None),
             ProvisioningTemplate(
                 name="ZTE C300 V1.2.5P3 default dry-run",
