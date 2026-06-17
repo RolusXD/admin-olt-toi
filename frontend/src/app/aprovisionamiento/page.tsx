@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Panel } from "@/components/ui/panel";
 import { api } from "@/services/api";
 import { useApiData } from "@/hooks/useApiData";
-import type { Nap, Olt, Onu, ProvisioningPlan, UnauthorizedOnu, Vlan, Zone } from "@/types";
+import type { Nap, NapPort, Olt, Onu, OnuType, ProvisioningPlan, SpeedProfile, UnauthorizedOnu, Vlan, Zone } from "@/types";
 
 export default function ProvisioningPage() {
   const [showLab, setShowLab] = useState(false);
@@ -29,6 +29,9 @@ export default function ProvisioningPage() {
   const zones = useApiData<Zone[]>(api.zones, []);
   const naps = useApiData<Nap[]>(api.naps, []);
   const vlans = useApiData<Vlan[]>(() => api.vlans(selectedOltId ? { olt_id: selectedOltId } : {}), []);
+  const onuTypes = useApiData<OnuType[]>(() => api.onuTypes({ is_active: 1 }), []);
+  const speedProfiles = useApiData<SpeedProfile[]>(() => api.speedProfiles({ is_active: 1 }), []);
+  const napPorts = useApiData<NapPort[]>(() => api.napPorts(), []);
   const onus = useApiData<Onu[]>(() => api.onus({ environment }), []);
 
   const selectedPending = useMemo(
@@ -56,6 +59,8 @@ export default function ProvisioningPage() {
     setError(null);
     setMessage(null);
     const form = new FormData(event.currentTarget);
+    const speedProfileId = Number(form.get("speed_profile_id") || 0);
+    const selectedSpeedProfile = speedProfiles.data.find((profile) => profile.id === speedProfileId);
     const payload = {
       unauthorized_onu_id: Number(selectedUnauthorizedId),
       customer_name: String(form.get("customer_name") ?? ""),
@@ -68,8 +73,10 @@ export default function ProvisioningPage() {
       nap_port: Number(form.get("nap_port")),
       onu_type: String(form.get("onu_type") ?? ""),
       vlan: Number(form.get("vlan")),
-      speed_profile_up: String(form.get("speed_profile_up") ?? ""),
-      speed_profile_down: String(form.get("speed_profile_down") ?? ""),
+      speed_profile_id: speedProfileId || undefined,
+      speed_profile_up: selectedSpeedProfile?.upstream_profile_name ?? "",
+      speed_profile_down: selectedSpeedProfile?.downstream_profile_name ?? "",
+      selected_onu_id: form.get("selected_onu_id") ? Number(form.get("selected_onu_id")) : undefined,
     };
     try {
       const created = await api.createProvisioningPlan(payload);
@@ -87,7 +94,7 @@ export default function ProvisioningPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await api.validateProvisioningPlan(plan.id);
+      const result = await api.revalidateProvisioningPlan(plan.id);
       setPlan(result.plan);
       setMessage(result.errors.length ? "Validacion completada con errores." : "Plan validado correctamente.");
     } catch (err) {
@@ -215,9 +222,15 @@ export default function ProvisioningPage() {
           <Panel className="p-4">
             <h3 className="mb-4 text-sm font-semibold text-slate-950">Paso 3: Datos FTTH</h3>
             <div className="grid gap-3 md:grid-cols-3">
-              <Select name="zone_id" label="Zona" items={zones.data.map((zone) => ({ value: zone.id, label: zone.name }))} />
-              <Select name="nap_id" label="NAP" items={napsForZone.map((nap) => ({ value: nap.id, label: nap.name }))} />
-              <Input name="nap_port" placeholder="Puerto NAP" type="number" min={1} required />
+              <Select name="zone_id" label="Zona" items={zones.data.filter((zone) => zone.is_active !== false).map((zone) => ({ value: zone.id, label: zone.name }))} />
+              <Select name="nap_id" label="NAP" items={napsForZone.filter((nap) => nap.is_active !== false).map((nap) => ({ value: nap.id, label: nap.name }))} />
+              <Select
+                name="nap_port"
+                label="Puerto NAP"
+                items={napPorts.data
+                  .filter((port) => port.status === "free" || port.status === "reserved")
+                  .map((port) => ({ value: port.port_number, label: `NAP ${port.nap_id} - Puerto ${port.port_number} - ${port.status}` }))}
+              />
             </div>
             <NapOccupation onus={onus.data} />
           </Panel>
@@ -225,14 +238,26 @@ export default function ProvisioningPage() {
           <Panel className="p-4">
             <h3 className="mb-4 text-sm font-semibold text-slate-950">Paso 4: Datos tecnicos</h3>
             <div className="grid gap-3 md:grid-cols-4">
-              <Input name="onu_type" placeholder="Tipo ONU" defaultValue={selectedPending?.detected_vendor ?? selectedPending?.detected_type ?? "VSOL"} required />
+              <Select
+                name="onu_type"
+                label="Tipo ONU"
+                items={onuTypes.data
+                  .filter((type) => !selectedOltId || String(type.olt_id) === selectedOltId)
+                  .map((type) => ({ value: type.name, label: `${type.name} ${type.vendor_detected ?? ""}` }))}
+              />
+              <Input name="selected_onu_id" placeholder="ONU ID seleccionado (opcional)" type="number" min={1} />
               <Select
                 name="vlan"
                 label="VLAN"
-                items={vlans.data.map((vlan) => ({ value: vlan.vlan_id, label: `${vlan.vlan_id} ${vlan.description ?? vlan.name ?? ""}` }))}
+                items={vlans.data.filter((vlan) => vlan.is_active !== false).map((vlan) => ({ value: vlan.vlan_id, label: `${vlan.vlan_id} ${vlan.description ?? vlan.name ?? ""}` }))}
               />
-              <Input name="speed_profile_up" placeholder="Perfil UP" defaultValue="SMARTOLT-1G-UP" required />
-              <Input name="speed_profile_down" placeholder="Perfil DOWN" defaultValue="SMARTOLT-1G-DOWN" required />
+              <Select
+                name="speed_profile_id"
+                label="Perfil velocidad"
+                items={speedProfiles.data
+                  .filter((profile) => !selectedOltId || String(profile.olt_id) === selectedOltId)
+                  .map((profile) => ({ value: profile.id, label: `${profile.name} (${profile.profile_code})` }))}
+              />
             </div>
           </Panel>
 
@@ -241,7 +266,7 @@ export default function ProvisioningPage() {
               <FileText className="h-4 w-4" /> Crear preview dry-run
             </Button>
             <Button type="button" variant="secondary" onClick={validatePlan} disabled={!plan || loading}>
-              <CheckCircle2 className="h-4 w-4" /> Validar
+              <CheckCircle2 className="h-4 w-4" /> Revalidar tecnica
             </Button>
             <Button type="button" variant="secondary" onClick={approvePlan} disabled={!plan || loading || plan.status === "approved"}>
               <ClipboardCheck className="h-4 w-4" /> Aprobar plan
@@ -313,7 +338,18 @@ function PlanPreview({ plan }: { plan: ProvisioningPlan }) {
         <Info label="NAP puerto" value={plan.nap_port} />
         <Info label="VLAN" value={plan.vlan} />
         <Info label="Perfiles" value={`${plan.speed_profile_up} / ${plan.speed_profile_down}`} />
+        <Info label="ONU ID seleccionado" value={plan.selected_onu_id ?? "-"} />
+        <Info label="ONU ID sugerido" value={plan.suggested_onu_id ?? "-"} />
+        <Info
+          label="Diferencia ONU ID"
+          value={
+            plan.selected_onu_id && plan.suggested_onu_id && plan.selected_onu_id !== plan.suggested_onu_id
+              ? `${plan.selected_onu_id} vs ${plan.suggested_onu_id}`
+              : "Sin diferencia"
+          }
+        />
       </div>
+      <TechnicalValidation plan={plan} />
       {(plan.validation_errors.length > 0 || plan.validation_warnings.length > 0) && (
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <ValidationBox title="Errors" items={plan.validation_errors} tone="red" />
@@ -324,6 +360,35 @@ function PlanPreview({ plan }: { plan: ProvisioningPlan }) {
         {plan.generated_cli ?? "Sin CLI generado."}
       </pre>
     </Panel>
+  );
+}
+
+function TechnicalValidation({ plan }: { plan: ProvisioningPlan }) {
+  const result = plan.validation_result;
+  const isValid = result?.is_valid ?? plan.validation_errors.length === 0;
+  return (
+    <div
+      className={`mt-4 rounded-md border p-4 text-sm ${
+        isValid ? "border-emerald-200 bg-emerald-50 text-emerald-950" : "border-red-200 bg-red-50 text-red-950"
+      }`}
+    >
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="font-semibold">Validacion Tecnica</div>
+          <div className="mt-1">{isValid ? "Apto para ejecutar" : "No apto para ejecutar"}</div>
+        </div>
+        <div className="text-xs">
+          {result?.validated_at ? `Validado: ${new Date(result.validated_at).toLocaleString()}` : "Pendiente de validacion"}
+        </div>
+      </div>
+      {result && (
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <Info label="ONU ID sugerido" value={result.suggested_onu_id ?? "-"} />
+          <Info label="ONU ID seleccionado" value={result.selected_onu_id ?? "-"} />
+          <Info label="IDs ocupados" value={result.occupied_onu_ids.length ? result.occupied_onu_ids.join(", ") : "Ninguno"} />
+        </div>
+      )}
+    </div>
   );
 }
 

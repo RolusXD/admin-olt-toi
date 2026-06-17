@@ -10,6 +10,7 @@ from app.models.entities import (
     ImportJob,
     MonitoringExecution,
     Nap,
+    NapPort,
     Olt,
     Onu,
     OnuEventHistory,
@@ -18,6 +19,8 @@ from app.models.entities import (
     PonPort,
     ProvisioningPlan,
     ProvisioningTemplate,
+    ProvisioningValidationResult,
+    SpeedProfile,
     UnauthorizedOnu,
     Vlan,
     Zone,
@@ -53,8 +56,16 @@ class OnuTypeRepository(Repository[OnuType]):
     model = OnuType
 
 
+class SpeedProfileRepository(Repository[SpeedProfile]):
+    model = SpeedProfile
+
+
 class NapRepository(Repository[Nap]):
     model = Nap
+
+
+class NapPortRepository(Repository[NapPort]):
+    model = NapPort
 
 
 class PonPortRepository(Repository[PonPort]):
@@ -92,6 +103,10 @@ class ProvisioningTemplateRepository(Repository[ProvisioningTemplate]):
 
 class ProvisioningPlanRepository(Repository[ProvisioningPlan]):
     model = ProvisioningPlan
+
+
+class ProvisioningValidationResultRepository(Repository[ProvisioningValidationResult]):
+    model = ProvisioningValidationResult
 
 
 class DriverCommandLogRepository(Repository[DriverCommandLog]):
@@ -157,6 +172,7 @@ def dashboard_counts(
     provisioning_draft = db.scalar(select(func.count()).select_from(plan_statement.where(ProvisioningPlan.status == "draft").subquery())) or 0
     provisioning_validated = db.scalar(select(func.count()).select_from(plan_statement.where(ProvisioningPlan.status == "validated").subquery())) or 0
     provisioning_approved = db.scalar(select(func.count()).select_from(plan_statement.where(ProvisioningPlan.status == "approved").subquery())) or 0
+    provisioning_failed = db.scalar(select(func.count()).select_from(plan_statement.where(ProvisioningPlan.status == "validation_failed").subquery())) or 0
     provisioning_cancelled = db.scalar(select(func.count()).select_from(plan_statement.where(ProvisioningPlan.status == "cancelled").subquery())) or 0
     return {
         "online": total_online,
@@ -173,6 +189,7 @@ def dashboard_counts(
         "provisioning_draft": provisioning_draft,
         "provisioning_validated": provisioning_validated,
         "provisioning_approved": provisioning_approved,
+        "provisioning_validation_failed": provisioning_failed,
         "provisioning_cancelled": provisioning_cancelled,
     }
 

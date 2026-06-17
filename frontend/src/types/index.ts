@@ -35,17 +35,27 @@ export type OltInventorySummary = {
 export type Zone = {
   id: number;
   name: string;
+  code?: string | null;
   description?: string | null;
+  is_active?: boolean;
+  source?: string;
+  notes?: string | null;
 };
 
 export type Nap = {
   id: number;
   zone_id: number;
   name: string;
+  code?: string | null;
+  nap_type?: string;
   capacity: number;
   latitude?: number | null;
   longitude?: number | null;
+  address_reference?: string | null;
   description?: string | null;
+  is_active?: boolean;
+  source?: string;
+  notes?: string | null;
 };
 
 export type Vlan = {
@@ -54,9 +64,84 @@ export type Vlan = {
   olt_code?: string | null;
   olt_name?: string | null;
   olt_environment?: string | null;
+  olt_code_snapshot?: string | null;
   vlan_id: number;
   name?: string | null;
   description?: string | null;
+  service_type?: string;
+  is_active?: boolean;
+  source?: string;
+  notes?: string | null;
+};
+
+export type OnuType = {
+  id: number;
+  olt_id: number;
+  olt_code?: string | null;
+  olt_name?: string | null;
+  olt_environment?: string | null;
+  olt_code_snapshot?: string | null;
+  name: string;
+  vendor_detected?: string | null;
+  model_detected?: string | null;
+  technology: string;
+  ethernet_ports?: number | null;
+  wifi_ports?: number | null;
+  pots_ports?: number | null;
+  rf_ports?: number | null;
+  is_active: boolean;
+  source: string;
+  notes?: string | null;
+};
+
+export type SpeedProfile = {
+  id: number;
+  olt_id: number;
+  olt_code?: string | null;
+  olt_name?: string | null;
+  olt_environment?: string | null;
+  olt_code_snapshot?: string | null;
+  name: string;
+  profile_code: string;
+  upstream_profile_name: string;
+  downstream_profile_name: string;
+  upstream_kbps?: number | null;
+  downstream_kbps?: number | null;
+  technology: string;
+  source: string;
+  is_active: boolean;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NapPort = {
+  id: number;
+  nap_id: number;
+  port_number: number;
+  label?: string | null;
+  status: string;
+  onu_id?: number | null;
+  customer_name_snapshot?: string | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProvisioningTemplate = {
+  id: number;
+  name: string;
+  vendor: string;
+  model: string;
+  firmware?: string | null;
+  template_name: string;
+  template_body: string;
+  commands: string;
+  is_default: boolean;
+  is_active: boolean;
+  description?: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type PonPort = {
@@ -290,6 +375,7 @@ export type DashboardSummary = {
   provisioning_draft: number;
   provisioning_validated: number;
   provisioning_approved: number;
+  provisioning_validation_failed: number;
   provisioning_cancelled: number;
   last_sync_onus?: MonitoringExecution | null;
   last_sync_power?: MonitoringExecution | null;
@@ -314,10 +400,15 @@ export type ProvisioningPlan = {
   vlan: number;
   speed_profile_up: string;
   speed_profile_down: string;
+  speed_profile_id?: number | null;
+  selected_onu_id?: number | null;
+  suggested_onu_id?: number | null;
   generated_cli?: string | null;
   validation_warnings: string[];
   validation_errors: string[];
-  status: "draft" | "validated" | "approved" | "executed" | "cancelled" | string;
+  validation_result?: ProvisioningValidationResult | null;
+  validated_at?: string | null;
+  status: "draft" | "validated" | "validation_failed" | "approved" | "executed" | "cancelled" | string;
   created_at: string;
   updated_at: string;
 };
@@ -326,6 +417,22 @@ export type ProvisioningPlanValidation = {
   plan: ProvisioningPlan;
   warnings: string[];
   errors: string[];
+  is_valid: boolean;
+  suggested_onu_id?: number | null;
+  cli_preview?: string | null;
+};
+
+export type ProvisioningValidationResult = {
+  id?: number | null;
+  provisioning_plan_id: number;
+  is_valid: boolean;
+  warnings: string[];
+  errors: string[];
+  suggested_onu_id?: number | null;
+  selected_onu_id?: number | null;
+  occupied_onu_ids: number[];
+  cli_preview?: string | null;
+  validated_at: string;
 };
 
 export type DashboardEnvironmentSummary = {

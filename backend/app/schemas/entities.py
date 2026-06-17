@@ -114,7 +114,11 @@ class OltInventorySummary(BaseModel):
 
 class ZoneSchema(BaseModel):
     name: str
+    code: str | None = None
     description: str | None = None
+    is_active: bool = True
+    source: str = "manual"
+    notes: str | None = None
 
 
 class ZoneRead(ZoneSchema):
@@ -125,10 +129,16 @@ class ZoneRead(ZoneSchema):
 class NapSchema(BaseModel):
     zone_id: int
     name: str
+    code: str | None = None
+    nap_type: str = "NAP"
     latitude: float | None = None
     longitude: float | None = None
     capacity: int = 8
+    address_reference: str | None = None
     description: str | None = None
+    is_active: bool = True
+    source: str = "manual"
+    notes: str | None = None
 
 
 class NapRead(NapSchema):
@@ -160,9 +170,169 @@ class VlanRead(BaseModel):
     olt_code: str | None = None
     olt_name: str | None = None
     olt_environment: str | None = None
+    olt_code_snapshot: str | None = None
     vlan_id: int
     name: str | None = None
     description: str | None = None
+    service_type: str = "internet"
+    is_active: bool = True
+    source: str = "imported"
+    notes: str | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VlanCreate(BaseModel):
+    olt_id: int
+    vlan_id: int
+    name: str | None = None
+    description: str | None = None
+    service_type: str = "internet"
+    is_active: bool = True
+    source: str = "manual"
+    notes: str | None = None
+
+
+class VlanUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    service_type: str | None = None
+    is_active: bool | None = None
+    notes: str | None = None
+
+
+class OnuTypeCreate(BaseModel):
+    olt_id: int
+    name: str
+    vendor_detected: str | None = None
+    model_detected: str | None = None
+    technology: str = "GPON"
+    max_tcont: int | None = None
+    max_gemport: int | None = None
+    max_ports: int | None = None
+    ethernet_ports: int | None = None
+    wifi_ports: int | None = None
+    pots_ports: int | None = None
+    rf_ports: int | None = None
+    is_active: bool = True
+    source: str = "manual"
+    notes: str | None = None
+
+
+class OnuTypeUpdate(BaseModel):
+    name: str | None = None
+    vendor_detected: str | None = None
+    model_detected: str | None = None
+    technology: str | None = None
+    max_tcont: int | None = None
+    max_gemport: int | None = None
+    max_ports: int | None = None
+    ethernet_ports: int | None = None
+    wifi_ports: int | None = None
+    pots_ports: int | None = None
+    rf_ports: int | None = None
+    is_active: bool | None = None
+    notes: str | None = None
+
+
+class OnuTypeRead(OnuTypeCreate):
+    id: int
+    olt_code: str | None = None
+    olt_name: str | None = None
+    olt_environment: str | None = None
+    olt_code_snapshot: str | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SpeedProfileCreate(BaseModel):
+    olt_id: int
+    name: str
+    profile_code: str
+    upstream_profile_name: str
+    downstream_profile_name: str
+    upstream_kbps: int | None = None
+    downstream_kbps: int | None = None
+    technology: str = "GPON"
+    source: str = "manual"
+    is_active: bool = True
+    notes: str | None = None
+
+
+class SpeedProfileUpdate(BaseModel):
+    name: str | None = None
+    profile_code: str | None = None
+    upstream_profile_name: str | None = None
+    downstream_profile_name: str | None = None
+    upstream_kbps: int | None = None
+    downstream_kbps: int | None = None
+    technology: str | None = None
+    is_active: bool | None = None
+    notes: str | None = None
+
+
+class SpeedProfileRead(SpeedProfileCreate):
+    id: int
+    olt_code: str | None = None
+    olt_name: str | None = None
+    olt_environment: str | None = None
+    olt_code_snapshot: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NapPortCreate(BaseModel):
+    nap_id: int
+    port_number: int
+    label: str | None = None
+    status: str = "free"
+    onu_id: int | None = None
+    customer_name_snapshot: str | None = None
+    notes: str | None = None
+
+
+class NapPortUpdate(BaseModel):
+    label: str | None = None
+    status: str | None = None
+    onu_id: int | None = None
+    customer_name_snapshot: str | None = None
+    notes: str | None = None
+
+
+class NapPortRead(NapPortCreate):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProvisioningTemplateCreate(BaseModel):
+    vendor: str = "ZTE"
+    model: str = "C300"
+    firmware: str | None = "V1.2.5P3"
+    template_name: str
+    template_body: str
+    is_default: bool = False
+    is_active: bool = True
+    description: str | None = None
+
+
+class ProvisioningTemplateUpdate(BaseModel):
+    vendor: str | None = None
+    model: str | None = None
+    firmware: str | None = None
+    template_name: str | None = None
+    template_body: str | None = None
+    is_default: bool | None = None
+    is_active: bool | None = None
+    description: str | None = None
+
+
+class ProvisioningTemplateRead(ProvisioningTemplateCreate):
+    id: int
+    name: str
+    commands: str
+    created_at: datetime
+    updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -278,6 +448,7 @@ class DashboardSummary(BaseModel):
     provisioning_draft: int = 0
     provisioning_validated: int = 0
     provisioning_approved: int = 0
+    provisioning_validation_failed: int = 0
     provisioning_cancelled: int = 0
     last_sync_onus: "MonitoringExecutionRead | None" = None
     last_sync_power: "MonitoringExecutionRead | None" = None
@@ -381,7 +552,7 @@ class UnauthorizedOnuEventRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-PROVISIONING_STATUSES = {"draft", "validated", "approved", "executed", "cancelled"}
+PROVISIONING_STATUSES = {"draft", "validated", "validation_failed", "approved", "executed", "cancelled"}
 
 
 class ProvisioningPlanCreate(BaseModel):
@@ -396,10 +567,12 @@ class ProvisioningPlanCreate(BaseModel):
     nap_port: int = Field(ge=1)
     onu_type: str
     vlan: int
-    speed_profile_up: str
-    speed_profile_down: str
+    speed_profile_up: str = ""
+    speed_profile_down: str = ""
+    speed_profile_id: int | None = None
+    selected_onu_id: int | None = Field(default=None, ge=1)
 
-    @field_validator("customer_name", "onu_type", "speed_profile_up", "speed_profile_down")
+    @field_validator("customer_name", "onu_type")
     @classmethod
     def required_text(cls, value: str) -> str:
         normalized = (value or "").strip()
@@ -427,9 +600,14 @@ class ProvisioningPlanRead(BaseModel):
     vlan: int
     speed_profile_up: str
     speed_profile_down: str
+    speed_profile_id: int | None = None
+    selected_onu_id: int | None = None
+    suggested_onu_id: int | None = None
     generated_cli: str | None = None
     validation_warnings: list[str] = []
     validation_errors: list[str] = []
+    validation_result: "ProvisioningValidationResultRead | None" = None
+    validated_at: datetime | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -440,13 +618,30 @@ class ProvisioningPlanValidationResponse(BaseModel):
     plan: ProvisioningPlanRead
     warnings: list[str]
     errors: list[str]
+    is_valid: bool = False
+    suggested_onu_id: int | None = None
+    cli_preview: str | None = None
 
 
 class ProvisioningPlanCounts(BaseModel):
     draft: int = 0
     validated: int = 0
+    validation_failed: int = 0
     approved: int = 0
     cancelled: int = 0
+
+
+class ProvisioningValidationResultRead(BaseModel):
+    id: int | None = None
+    provisioning_plan_id: int
+    is_valid: bool
+    warnings: list[str]
+    errors: list[str]
+    suggested_onu_id: int | None = None
+    selected_onu_id: int | None = None
+    occupied_onu_ids: list[int] = []
+    cli_preview: str | None = None
+    validated_at: datetime
 
 
 class MonitoringExecutionRead(BaseModel):

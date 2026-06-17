@@ -12,10 +12,12 @@ from app.models.entities import (
     GponProfile,
     ImportJob,
     Nap,
+    NapPort,
     Olt,
     Onu,
     OnuType,
     PonPort,
+    SpeedProfile,
     Vlan,
     Zone,
 )
@@ -131,11 +133,14 @@ class InitialImportService:
         for vlan in parsed.vlans:
             self._upsert_vlan(olt.id, vlan)
             counters["vlans_upserted"] += 1
+        imported_profiles = []
         for profile in parsed.gpon_profiles:
             self._upsert_profile(olt.id, profile)
+            imported_profiles.append(profile)
             counters["gpon_profiles_upserted"] += 1
+        self._sync_speed_profiles(olt.id, imported_profiles)
         for onu_type in parsed.onu_types:
-            self._upsert_onu_type(olt.id, onu_type)
+            self._upsert_onu_type(olt, onu_type)
             counters["onu_types_upserted"] += 1
         for pon_port in parsed.pon_ports:
             self._upsert_pon_port(olt.id, pon_port)
@@ -145,7 +150,9 @@ class InitialImportService:
             nap, nap_created = self._ensure_nap(zone, onu.parsed_nap_name)
             counters["zones_upserted"] += 1 if zone_created else 0
             counters["naps_upserted"] += 1 if nap_created else 0
-            self._upsert_onu(olt, job, onu, zone.id if zone else None, nap.id if nap else None)
+            persisted = self._upsert_onu(olt, job, onu, zone.id if zone else None, nap.id if nap else None)
+            if nap and persisted.nap_port:
+                self._occupy_nap_port(nap, persisted)
             counters["onus_upserted"] += 1
 
         job.status = "confirmed"
@@ -189,12 +196,16 @@ class InitialImportService:
         return self._job_to_dict(job)
 
     def _upsert_vlan(self, olt_id: int, parsed) -> Vlan:
+        olt = self.db.get(Olt, olt_id)
         vlan = self.db.scalar(select(Vlan).where(Vlan.olt_id == olt_id, Vlan.vlan_id == parsed.vlan_id))
         if not vlan:
             vlan = Vlan(olt_id=olt_id, vlan_id=parsed.vlan_id)
             self.db.add(vlan)
+        vlan.olt_code_snapshot = olt.olt_code if olt else vlan.olt_code_snapshot
         vlan.name = parsed.name
         vlan.description = parsed.description
+        vlan.source = "imported"
+        vlan.is_active = True
         return vlan
 
     def _upsert_profile(self, olt_id: int, parsed) -> GponProfile:
@@ -212,15 +223,19 @@ class InitialImportService:
         profile.downstream_rate = parsed.downstream_rate
         return profile
 
-    def _upsert_onu_type(self, olt_id: int, parsed) -> OnuType:
-        onu_type = self.db.scalar(select(OnuType).where(OnuType.olt_id == olt_id, OnuType.name == parsed.name))
+    def _upsert_onu_type(self, olt: Olt, parsed) -> OnuType:
+        onu_type = self.db.scalar(select(OnuType).where(OnuType.olt_id == olt.id, OnuType.name == parsed.name))
         if not onu_type:
-            onu_type = OnuType(olt_id=olt_id, name=parsed.name)
+            onu_type = OnuType(olt_id=olt.id, name=parsed.name)
             self.db.add(onu_type)
+        onu_type.olt_code_snapshot = olt.olt_code
         onu_type.vendor_detected = parsed.vendor_detected
         onu_type.max_tcont = parsed.max_tcont
         onu_type.max_gemport = parsed.max_gemport
         onu_type.max_ports = parsed.max_ports
+        onu_type.technology = "GPON"
+        onu_type.source = "imported"
+        onu_type.is_active = True
         return onu_type
 
     def _upsert_pon_port(self, olt_id: int, parsed) -> PonPort:
@@ -242,6 +257,9 @@ class InitialImportService:
         if zone:
             return zone, False
         zone = Zone(name=name, description="Detectada por importacion inicial OLT")
+        zone.code = name
+        zone.source = "imported"
+        zone.is_active = True
         self.db.add(zone)
         self.db.flush()
         return zone, True
@@ -251,10 +269,12 @@ class InitialImportService:
             return None, False
         nap = self.db.scalar(select(Nap).where(Nap.zone_id == zone.id, Nap.name == name))
         if nap:
+            self._ensure_nap_ports(nap)
             return nap, False
-        nap = Nap(zone_id=zone.id, name=name, capacity=8, description="Detectada por importacion inicial OLT")
+        nap = Nap(zone_id=zone.id, name=name, code=name, capacity=16, description="Detectada por importacion inicial OLT", source="imported", is_active=True)
         self.db.add(nap)
         self.db.flush()
+        self._ensure_nap_ports(nap)
         return nap, True
 
     def _upsert_onu(self, olt: Olt, job: ImportJob, parsed: ParsedOnu, zone_id: int | None, nap_id: int | None) -> Onu:
@@ -300,6 +320,62 @@ class InitialImportService:
         onu.source = "cli_import"
         onu.import_source = self.IMPORT_SOURCE_BY_JOB_SOURCE.get(job.source, "manual")
         return onu
+
+    def _sync_speed_profiles(self, olt_id: int, parsed_profiles: list | None = None) -> None:
+        olt = self.db.get(Olt, olt_id)
+        profiles = parsed_profiles if parsed_profiles is not None else list(self.db.scalars(select(GponProfile).where(GponProfile.olt_id == olt_id)))
+        ups = [profile for profile in profiles if profile.profile_type == "tcont"]
+        downs = [profile for profile in profiles if profile.profile_type == "traffic"]
+        used_down_names: set[str] = set()
+        for up in ups:
+            base = self._profile_base(up.name)
+            down = next((candidate for candidate in downs if self._profile_base(candidate.name) == base), None)
+            if not down:
+                down = next((candidate for candidate in downs if candidate.name not in used_down_names), None)
+            if down:
+                used_down_names.add(down.name)
+                self._upsert_speed_profile(olt, olt_id, up, down, base)
+
+    def _upsert_speed_profile(self, olt: Olt | None, olt_id: int, up: GponProfile, down: GponProfile, base: str) -> SpeedProfile:
+        code = base.upper()
+        speed = self.db.scalar(select(SpeedProfile).where(SpeedProfile.olt_id == olt_id, SpeedProfile.profile_code == code))
+        if not speed:
+            speed = SpeedProfile(olt_id=olt_id, profile_code=code)
+            self.db.add(speed)
+        speed.olt_code_snapshot = olt.olt_code if olt else speed.olt_code_snapshot
+        speed.name = base
+        speed.upstream_profile_name = up.name
+        speed.downstream_profile_name = down.name
+        speed.upstream_kbps = up.upstream_rate
+        speed.downstream_kbps = down.downstream_rate
+        speed.technology = "GPON"
+        speed.source = "imported"
+        speed.is_active = True
+        return speed
+
+    @staticmethod
+    def _profile_base(name: str) -> str:
+        upper = name.upper()
+        for suffix in ("-UP", "_UP", "-DOWN", "_DOWN"):
+            if upper.endswith(suffix):
+                return name[: -len(suffix)]
+        return name
+
+    def _ensure_nap_ports(self, nap: Nap) -> None:
+        existing = set(self.db.scalars(select(NapPort.port_number).where(NapPort.nap_id == nap.id)))
+        for port_number in range(1, (nap.capacity or 16) + 1):
+            if port_number not in existing:
+                self.db.add(NapPort(nap_id=nap.id, port_number=port_number, label=f"Puerto {port_number}", status="free"))
+
+    def _occupy_nap_port(self, nap: Nap, onu: Onu) -> None:
+        self._ensure_nap_ports(nap)
+        port = self.db.scalar(select(NapPort).where(NapPort.nap_id == nap.id, NapPort.port_number == onu.nap_port))
+        if not port:
+            port = NapPort(nap_id=nap.id, port_number=onu.nap_port, label=f"Puerto {onu.nap_port}")
+            self.db.add(port)
+        port.status = "occupied"
+        port.onu_id = onu.id
+        port.customer_name_snapshot = onu.customer_name
 
     def _job_to_dict(self, job: ImportJob) -> dict:
         return {

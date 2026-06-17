@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy import create_engine
 
 from app.models.base import Base
-from app.models.entities import ConfigSnapshot, DriverCommandLog, GponProfile, ImportJob, Nap, Olt, Onu, OnuType, PonPort, Vlan, Zone
+from app.models.entities import ConfigSnapshot, DriverCommandLog, GponProfile, ImportJob, Nap, NapPort, Olt, Onu, OnuType, PonPort, SpeedProfile, Vlan, Zone
 from app.api.routes.onus import list_onus
 from app.schemas.entities import OltCreate
 from app.schemas.entities import OnuRead
@@ -105,6 +105,7 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert scalar_count(db_session, Vlan) == 215
     assert scalar_count(db_session, OnuType) == 13
     assert scalar_count(db_session, GponProfile) == 28
+    assert scalar_count(db_session, SpeedProfile) > 0
 
     vlan_200 = db_session.scalar(select(Vlan).where(Vlan.olt_id == olt.id, Vlan.vlan_id == 200))
     assert vlan_200 is not None
@@ -115,6 +116,7 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
 
     nap = db_session.scalar(select(Nap).where(Nap.zone_id == zone.id, Nap.name == "C1"))
     assert nap is not None
+    assert db_session.scalar(select(NapPort).where(NapPort.nap_id == nap.id, NapPort.port_number == 1)) is not None
 
     onu = db_session.scalar(select(Onu).where(Onu.olt_id == olt.id, Onu.serial_number == "BTPTDD2459E4"))
     assert onu is not None
@@ -134,6 +136,9 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert onu.source == "cli_import"
     assert onu.import_source == "text_input"
     assert onu.olt_code_snapshot == "OLT-TEST-01"
+    occupied_port = db_session.scalar(select(NapPort).where(NapPort.nap_id == nap.id, NapPort.port_number == 2))
+    assert occupied_port.status == "occupied"
+    assert occupied_port.onu_id == onu.id
 
     counts_before_repeat = productive_counts(db_session)
     service.confirm_import(preview["import_job_id"])

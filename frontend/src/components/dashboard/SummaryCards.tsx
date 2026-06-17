@@ -14,6 +14,7 @@ const cards = [
   { key: "provisioning_draft", label: "Planes draft", icon: FileCheck2, tone: "text-slate-600" },
   { key: "provisioning_validated", label: "Planes validados", icon: FileCheck2, tone: "text-primary" },
   { key: "provisioning_approved", label: "Planes aprobados", icon: FileCheck2, tone: "text-warning" },
+  { key: "provisioning_validation_failed", label: "Planes no aptos", icon: FileCheck2, tone: "text-danger" },
   { key: "provisioning_cancelled", label: "Planes cancelados", icon: FileCheck2, tone: "text-danger" },
 ] as const;
 

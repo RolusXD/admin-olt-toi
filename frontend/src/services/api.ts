@@ -6,6 +6,7 @@ import type {
   ImportConfirmResult,
   ImportPreview,
   Nap,
+  NapPort,
   Olt,
   OltInventorySummary,
   OltPowerSyncResult,
@@ -18,7 +19,11 @@ import type {
   PowerSample,
   ProvisioningPlan,
   ProvisioningPlanValidation,
+  ProvisioningTemplate,
+  ProvisioningValidationResult,
   ReadOnlyCheckResult,
+  OnuType,
+  SpeedProfile,
   UnauthorizedOnu,
   UnauthorizedOnuDiscoveryResult,
   Vlan,
@@ -73,9 +78,15 @@ export const api = {
   olts: (params: { environment?: string } = {}) => request<Olt[]>(`/olts${toQuery(params)}`),
   olt: (id: number | string) => request<Olt>(`/olts/${id}`),
   oltInventorySummary: (id: number | string) => request<OltInventorySummary>(`/olts/${id}/inventory-summary`),
-  zones: () => request<Zone[]>("/zones"),
-  naps: () => request<Nap[]>("/naps"),
-  vlans: (params: { olt_id?: number | string; olt_code?: string } = {}) => request<Vlan[]>(`/vlans${toQuery(params)}`),
+  zones: (params: Record<string, string | number | undefined | null> = {}) => request<Zone[]>(`/zones${toQuery(params)}`),
+  naps: (params: Record<string, string | number | undefined | null> = {}) => request<Nap[]>(`/naps${toQuery(params)}`),
+  napPorts: (params: Record<string, string | number | undefined | null> = {}) => request<NapPort[]>(`/nap-ports${toQuery(params)}`),
+  vlans: (params: Record<string, string | number | undefined | null> = {}) => request<Vlan[]>(`/vlans${toQuery(params)}`),
+  onuTypes: (params: Record<string, string | number | undefined | null> = {}) => request<OnuType[]>(`/onu-types${toQuery(params)}`),
+  speedProfiles: (params: Record<string, string | number | undefined | null> = {}) =>
+    request<SpeedProfile[]>(`/speed-profiles${toQuery(params)}`),
+  provisioningTemplates: (params: Record<string, string | number | undefined | null> = {}) =>
+    request<ProvisioningTemplate[]>(`/provisioning-templates${toQuery(params)}`),
   ponPorts: (params: { olt_id?: number | string; olt_code?: string } = {}) => request<PonPort[]>(`/pon-ports${toQuery(params)}`),
   onus: (params: Record<string, string | number | undefined | null> = {}) => request<Onu[]>(`/onus${toQuery(params)}`),
   onu: (id: number | string) => request<Onu>(`/onus/${id}`),
@@ -123,6 +134,14 @@ export const api = {
     request<Zone>("/zones", { method: "POST", body: JSON.stringify(payload) }),
   createNap: (payload: Record<string, unknown>) =>
     request<Nap>("/naps", { method: "POST", body: JSON.stringify(payload) }),
+  createOnuType: (payload: Record<string, unknown>) =>
+    request<OnuType>("/onu-types", { method: "POST", body: JSON.stringify(payload) }),
+  createSpeedProfile: (payload: Record<string, unknown>) =>
+    request<SpeedProfile>("/speed-profiles", { method: "POST", body: JSON.stringify(payload) }),
+  createVlan: (payload: Record<string, unknown>) =>
+    request<Vlan>("/vlans", { method: "POST", body: JSON.stringify(payload) }),
+  createProvisioningTemplate: (payload: Record<string, unknown>) =>
+    request<ProvisioningTemplate>("/provisioning-templates", { method: "POST", body: JSON.stringify(payload) }),
   createOnu: (payload: Record<string, unknown>) =>
     request<Onu>("/onus", { method: "POST", body: JSON.stringify(payload) }),
   provisioningPlans: (params: Record<string, string | number | undefined | null> = {}) =>
@@ -132,6 +151,10 @@ export const api = {
     request<ProvisioningPlan>("/provisioning-plans", { method: "POST", body: JSON.stringify(payload) }),
   validateProvisioningPlan: (id: number | string) =>
     request<ProvisioningPlanValidation>(`/provisioning-plans/${id}/validate`, { method: "PUT" }),
+  revalidateProvisioningPlan: (id: number | string) =>
+    request<ProvisioningPlanValidation>(`/provisioning-plans/${id}/revalidate`, { method: "PUT" }),
+  provisioningValidationResult: (id: number | string) =>
+    request<ProvisioningValidationResult>(`/provisioning-plans/${id}/validation-result`),
   approveProvisioningPlan: (id: number | string) =>
     request<ProvisioningPlan>(`/provisioning-plans/${id}/approve`, { method: "PUT" }),
   cancelProvisioningPlan: (id: number | string) =>

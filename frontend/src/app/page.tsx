@@ -29,6 +29,7 @@ const emptySummary: DashboardSummary = {
   provisioning_draft: 0,
   provisioning_validated: 0,
   provisioning_approved: 0,
+  provisioning_validation_failed: 0,
   provisioning_cancelled: 0,
 };
 

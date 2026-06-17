@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, ClipboardList, FileCheck2, FileInput, History, Network, ShieldCheck } from "lucide-react";
+import { Activity, Boxes, ClipboardList, FileCheck2, FileInput, History, Network, ShieldCheck } from "lucide-react";
 import clsx from "clsx";
 
 const nav = [
@@ -11,6 +11,12 @@ const nav = [
   { label: "Prueba OLT Read-Only", icon: ShieldCheck, href: "/prueba-read-only" },
   { label: "ONUs", icon: Network, href: "/onus" },
   { label: "ONUs Pendientes", icon: ClipboardList, href: "/onus-pendientes" },
+  { label: "Tipos ONU", icon: Boxes, href: "/onu-types" },
+  { label: "Perfiles", icon: Boxes, href: "/speed-profiles" },
+  { label: "VLANs", icon: Boxes, href: "/vlans" },
+  { label: "Zonas", icon: Boxes, href: "/zonas" },
+  { label: "NAPs", icon: Boxes, href: "/naps" },
+  { label: "Plantillas", icon: Boxes, href: "/provisioning-templates" },
   { label: "Aprovisionamiento", icon: FileCheck2, href: "/aprovisionamiento" },
   { label: "Monitoreo", icon: History, href: "/monitoreo" },
 ];

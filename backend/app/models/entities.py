@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -73,9 +73,14 @@ class Vlan(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
+    olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
     vlan_id: Mapped[int] = mapped_column(Integer)
     name: Mapped[str | None] = mapped_column(String(120))
     description: Mapped[str | None] = mapped_column(Text)
+    service_type: Mapped[str] = mapped_column(String(40), default="internet")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    source: Mapped[str] = mapped_column(String(40), default="imported")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     olt: Mapped[Olt] = relationship()
 
     @property
@@ -109,11 +114,66 @@ class OnuType(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
+    olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
     name: Mapped[str] = mapped_column(String(120))
     vendor_detected: Mapped[str | None] = mapped_column(String(80))
+    model_detected: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    technology: Mapped[str] = mapped_column(String(30), default="GPON")
     max_tcont: Mapped[int | None] = mapped_column(Integer)
     max_gemport: Mapped[int | None] = mapped_column(Integer)
     max_ports: Mapped[int | None] = mapped_column(Integer)
+    ethernet_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wifi_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pots_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rf_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    source: Mapped[str] = mapped_column(String(40), default="imported")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    olt: Mapped[Olt] = relationship()
+
+    @property
+    def olt_code(self) -> str | None:
+        return self.olt.olt_code if self.olt else self.olt_code_snapshot
+
+    @property
+    def olt_name(self) -> str | None:
+        return self.olt.name if self.olt else None
+
+    @property
+    def olt_environment(self) -> str | None:
+        return self.olt.environment if self.olt else None
+
+
+class SpeedProfile(Base, TimestampMixin):
+    __tablename__ = "speed_profiles"
+    __table_args__ = (UniqueConstraint("olt_id", "profile_code", name="uq_speed_profiles_olt_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
+    olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    name: Mapped[str] = mapped_column(String(120))
+    profile_code: Mapped[str] = mapped_column(String(120))
+    upstream_profile_name: Mapped[str] = mapped_column(String(120))
+    downstream_profile_name: Mapped[str] = mapped_column(String(120))
+    upstream_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    downstream_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    technology: Mapped[str] = mapped_column(String(30), default="GPON")
+    source: Mapped[str] = mapped_column(String(40), default="imported")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    olt: Mapped[Olt] = relationship()
+
+    @property
+    def olt_code(self) -> str | None:
+        return self.olt.olt_code if self.olt else self.olt_code_snapshot
+
+    @property
+    def olt_name(self) -> str | None:
+        return self.olt.name if self.olt else None
+
+    @property
+    def olt_environment(self) -> str | None:
+        return self.olt.environment if self.olt else None
 
 
 class Zone(Base):
@@ -121,7 +181,11 @@ class Zone(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
+    code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     description: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    source: Mapped[str] = mapped_column(String(40), default="imported")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     naps: Mapped[list["Nap"]] = relationship(back_populates="zone")
 
@@ -133,12 +197,36 @@ class Nap(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     zone_id: Mapped[int] = mapped_column(ForeignKey("zones.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(120))
+    code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    nap_type: Mapped[str] = mapped_column(String(40), default="NAP")
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
     capacity: Mapped[int] = mapped_column(Integer, default=8)
+    address_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
     description: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    source: Mapped[str] = mapped_column(String(40), default="imported")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     zone: Mapped[Zone] = relationship(back_populates="naps")
+    ports: Mapped[list["NapPort"]] = relationship(back_populates="nap", cascade="all, delete-orphan")
+
+
+class NapPort(Base, TimestampMixin):
+    __tablename__ = "nap_ports"
+    __table_args__ = (UniqueConstraint("nap_id", "port_number", name="uq_nap_ports_nap_port"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nap_id: Mapped[int] = mapped_column(ForeignKey("naps.id", ondelete="CASCADE"))
+    port_number: Mapped[int] = mapped_column(Integer)
+    label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="free")
+    onu_id: Mapped[int | None] = mapped_column(ForeignKey("onus.id", ondelete="SET NULL"), nullable=True)
+    customer_name_snapshot: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    nap: Mapped[Nap] = relationship(back_populates="ports")
+    onu: Mapped["Onu | None"] = relationship()
 
 
 class PonPort(Base):
@@ -313,9 +401,11 @@ class ProvisioningTemplate(Base):
     template_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     template_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_default: Mapped[bool] = mapped_column(default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     commands: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class ProvisioningPlan(Base, TimestampMixin):
@@ -339,15 +429,44 @@ class ProvisioningPlan(Base, TimestampMixin):
     vlan: Mapped[int] = mapped_column(Integer)
     speed_profile_up: Mapped[str] = mapped_column(String(120))
     speed_profile_down: Mapped[str] = mapped_column(String(120))
+    speed_profile_id: Mapped[int | None] = mapped_column(ForeignKey("speed_profiles.id", ondelete="SET NULL"), nullable=True)
+    selected_onu_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    suggested_onu_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     generated_cli: Mapped[str | None] = mapped_column(Text, nullable=True)
     validation_warnings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     validation_errors_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="draft")
 
     olt: Mapped[Olt] = relationship()
     unauthorized_onu: Mapped[UnauthorizedOnu] = relationship()
     zone: Mapped[Zone] = relationship()
     nap: Mapped[Nap] = relationship()
+    speed_profile: Mapped[SpeedProfile | None] = relationship()
+    validation_result: Mapped["ProvisioningValidationResult | None"] = relationship(
+        back_populates="plan",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class ProvisioningValidationResult(Base):
+    __tablename__ = "provisioning_validation_results"
+    __table_args__ = (UniqueConstraint("provisioning_plan_id", name="uq_provisioning_validation_plan"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provisioning_plan_id: Mapped[int] = mapped_column(ForeignKey("provisioning_plans.id", ondelete="CASCADE"))
+    is_valid: Mapped[bool] = mapped_column(Boolean, default=False)
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    errors_json: Mapped[str] = mapped_column(Text, default="[]")
+    suggested_onu_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    selected_onu_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    occupied_onu_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    cli_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    plan: Mapped[ProvisioningPlan] = relationship(back_populates="validation_result")
 
 
 class DriverCommandLog(Base):
