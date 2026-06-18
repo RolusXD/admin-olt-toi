@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
@@ -100,6 +100,7 @@ class ProvisioningService:
         speed_profile_down = (
             download_profile.name if download_profile else speed_profile.downstream_profile_name if speed_profile else payload.speed_profile_down
         )
+        onu_type = self._resolve_onu_type_value(payload.onu_type, olt.id, olt)
 
         plan = ProvisioningPlan(
             olt_id=olt.id,
@@ -115,7 +116,7 @@ class ProvisioningService:
             zone_id=payload.zone_id,
             nap_id=payload.nap_id,
             nap_port=payload.nap_port,
-            onu_type=payload.onu_type,
+            onu_type=onu_type.name if onu_type else payload.onu_type,
             vlan=payload.vlan,
             speed_profile_up=speed_profile_up,
             speed_profile_down=speed_profile_down,
@@ -301,16 +302,21 @@ class ProvisioningService:
         elif plan.selected_onu_id and plan.selected_onu_id != suggested_onu_id and plan.selected_onu_id not in occupied_onu_ids:
             warnings.append(f"El ONU ID seleccionado ({plan.selected_onu_id}) difiere del sugerido ({suggested_onu_id}).")
 
-        selected_type = (plan.onu_type or "").strip().upper()
+        onu_type = self._resolve_onu_type(plan, olt)
+        selected_type = self._onu_type_match_values(onu_type) if onu_type else {(plan.onu_type or "").strip().upper()}
         detected_type = ((unauthorized.detected_type or unauthorized.detected_vendor or "") if unauthorized else "").strip().upper()
         if not detected_type:
             warnings.append("No hay tipo ONU detectado en Discovery.")
-        elif selected_type and detected_type and selected_type != detected_type:
-            warnings.append(f"Tipo ONU detectado {detected_type} difiere del seleccionado {selected_type}.")
+        elif selected_type and detected_type and detected_type not in selected_type:
+            selected_label = onu_type.operational_alias or onu_type.display_name or onu_type.name if onu_type else plan.onu_type
+            warnings.append(f"Tipo ONU detectado {detected_type} difiere del seleccionado {selected_label}.")
 
-        onu_type = self._resolve_onu_type(plan, olt)
         if not onu_type:
             errors.append(f"El tipo ONU {plan.onu_type} no existe, no esta activo o no es compatible con vendor/model/firmware de la OLT.")
+        elif not onu_type.is_provisioning_allowed:
+            errors.append(f"El tipo ONU {onu_type.name} existe pero no esta habilitado para aprovisionamiento.")
+        else:
+            plan.onu_type = onu_type.name
 
         if not template:
             errors.append("No existe ProvisioningTemplate activo compatible con vendor/model/firmware de la OLT.")
@@ -346,7 +352,7 @@ class ProvisioningService:
             "pon_port_interface": pon_interface,
             "onu_index": onu_index,
             "onu_interface": onu_interface,
-            "onu_type": plan.onu_type,
+            "onu_type": self._cli_onu_type(plan, olt),
             "serial_number": plan.serial_number,
             "customer_name": plan.customer_name,
             "customer_name_cli": self._cli_name(plan.customer_name),
@@ -430,10 +436,20 @@ class ProvisioningService:
         return self.db.scalar(statement.limit(1))
 
     def _resolve_onu_type(self, plan: ProvisioningPlan, olt: Olt | None) -> OnuType | None:
+        return self._resolve_onu_type_value(plan.onu_type, plan.olt_id, olt)
+
+    def _resolve_onu_type_value(self, value: str | None, olt_id: int, olt: Olt | None) -> OnuType | None:
+        normalized = (value or "").strip()
+        if not normalized:
+            return None
         statement = select(OnuType).where(
-            OnuType.olt_id == plan.olt_id,
-            OnuType.name == plan.onu_type,
+            OnuType.olt_id == olt_id,
             OnuType.is_active.is_(True),
+            or_(
+                OnuType.name == normalized,
+                OnuType.operational_alias == normalized,
+                OnuType.display_name == normalized,
+            ),
         )
         if olt:
             statement = statement.where(
@@ -442,6 +458,20 @@ class ProvisioningService:
                 OnuType.firmware == olt.firmware,
             )
         return self.db.scalar(statement.limit(1))
+
+    @staticmethod
+    def _onu_type_match_values(onu_type: OnuType | None) -> set[str]:
+        if not onu_type:
+            return set()
+        return {
+            value.strip().upper()
+            for value in (onu_type.name, onu_type.operational_alias, onu_type.display_name, onu_type.vendor_detected)
+            if value and value.strip()
+        }
+
+    def _cli_onu_type(self, plan: ProvisioningPlan, olt: Olt | None) -> str:
+        onu_type = self._resolve_onu_type(plan, olt)
+        return onu_type.name if onu_type else plan.onu_type
 
     @staticmethod
     def next_available_onu_id(occupied_onu_ids: list[int], max_onu_id: int = 128) -> int | None:

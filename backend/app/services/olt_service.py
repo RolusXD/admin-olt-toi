@@ -18,10 +18,16 @@ class OltService:
 
     def create(self, data: dict) -> Olt:
         password = data.pop("password")
+        snmp_ro = data.pop("snmp_ro_community", None)
+        snmp_rw = data.pop("snmp_rw_community", None)
         data["olt_code"] = self._normalize_olt_code(data["olt_code"])
         data["environment"] = self._normalize_environment(data.get("environment", "production"))
         self._ensure_unique_olt_code(data["olt_code"])
         data.setdefault("initial_import_status", "pending")
+        if snmp_ro and snmp_ro.strip():
+            data["snmp_ro_community_encrypted"] = encrypt_secret(snmp_ro)
+        if snmp_rw and snmp_rw.strip():
+            data["snmp_rw_community_encrypted"] = encrypt_secret(snmp_rw)
         olt = self.repo.create({**data, "password_encrypted": encrypt_secret(password)})
         self.events.record("OLT_CREATED", "olt", olt.id, f"OLT {olt.name} registrada")
         return olt
@@ -36,6 +42,14 @@ class OltService:
             data["password_encrypted"] = encrypt_secret(data.pop("password"))
         else:
             data.pop("password", None)
+        if data.get("snmp_ro_community"):
+            data["snmp_ro_community_encrypted"] = encrypt_secret(data.pop("snmp_ro_community"))
+        else:
+            data.pop("snmp_ro_community", None)
+        if data.get("snmp_rw_community"):
+            data["snmp_rw_community_encrypted"] = encrypt_secret(data.pop("snmp_rw_community"))
+        else:
+            data.pop("snmp_rw_community", None)
         updated = self.repo.update(olt, {key: value for key, value in data.items() if value is not None})
         self.events.record("OLT_UPDATED", "olt", updated.id, f"OLT {updated.name} actualizada")
         return updated

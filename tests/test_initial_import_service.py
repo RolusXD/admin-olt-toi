@@ -15,6 +15,8 @@ from app.models.entities import (
     Nap,
     NapPort,
     Olt,
+    OltTechnicalSettings,
+    OltUplink,
     Onu,
     OnuType,
     PonPort,
@@ -123,6 +125,7 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert scalar_count(db_session, GponProfile) == 28
     assert scalar_count(db_session, ProfileCatalog) == 28
     assert scalar_count(db_session, SpeedProfile) > 0
+    assert scalar_count(db_session, OltTechnicalSettings) == 1
 
     vlan_200 = db_session.scalar(select(Vlan).where(Vlan.olt_id == olt.id, Vlan.vlan_id == 200))
     assert vlan_200 is not None
@@ -136,6 +139,10 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert onu_type.max_switch_perslot == 8
     assert onu_type.max_flow_perswitch == 8
     assert onu_type.max_iphost == 5
+    assert onu_type.pon_type == "GPON"
+    assert onu_type.channel_gpon is True
+    assert onu_type.allow_custom_profiles is True
+    assert onu_type.capability_mode in {"bridging", "bridging_routing"}
 
     upload_catalog = db_session.scalar(
         select(ProfileCatalog).where(ProfileCatalog.olt_id == olt.id, ProfileCatalog.direction == "upload", ProfileCatalog.name == "SMARTOLT-1G-UP")
@@ -152,8 +159,13 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert upload_catalog.model == "C300"
     assert upload_catalog.firmware == "V1.2.5P3"
     assert upload_catalog.maximum_kbps == 1048064
+    assert upload_catalog.speed_kbps == 1048064
     assert download_catalog is not None
     assert download_catalog.pir_kbps == 1048064
+    assert download_catalog.speed_kbps == 1048064
+
+    uplinks = db_session.scalars(select(OltUplink).where(OltUplink.olt_id == olt.id)).all()
+    assert isinstance(uplinks, list)
 
     zone = db_session.scalar(select(Zone).where(Zone.name == "Lagunas"))
     assert zone is not None

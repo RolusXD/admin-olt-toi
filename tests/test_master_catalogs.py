@@ -110,16 +110,27 @@ def catalog(db_session):
 
 def test_crud_onu_type_and_deactivate(db_session, catalog):
     created = create_onu_type(
-        OnuTypeCreate(olt_id=catalog["olt"].id, name="VSOL", vendor_detected="VSOL", ethernet_ports=1),
+        OnuTypeCreate(
+            olt_id=catalog["olt"].id,
+            name="Prueba-vSol-no-usar",
+            display_name="VSOL / 2 LAN + WiFi",
+            operational_alias="VSOL",
+            vendor_detected="VSOL",
+            ethernet_ports=2,
+            wifi_ports=1,
+            is_provisioning_allowed=True,
+        ),
         db_session,
     )
     assert created.source == "manual"
     assert created.is_active is True
+    assert created.operational_alias == "VSOL"
+    assert created.is_provisioning_allowed is True
 
     deactivated = deactivate_onu_type(created.id, db_session)
 
     assert deactivated.is_active is False
-    assert db_session.scalar(select(OnuType).where(OnuType.name == "VSOL")) is not None
+    assert db_session.scalar(select(OnuType).where(OnuType.name == "Prueba-vSol-no-usar")) is not None
 
 
 def test_crud_speed_profile_and_deactivate(db_session, catalog):
@@ -159,6 +170,40 @@ def test_crud_profile_catalog_and_deactivate(db_session, catalog):
     assert deactivated.is_active is False
 
 
+def test_profile_catalog_default_is_unique_by_olt_direction_type(db_session, catalog):
+    first = create_profile_catalog(
+        ProfileCatalogCreate(
+            olt_id=catalog["olt"].id,
+            direction="upload",
+            profile_kind="tcont",
+            name="DEFAULT-UP-1",
+            service_type="internet",
+            maximum_kbps=100000,
+            is_default=True,
+        ),
+        db_session,
+    )
+    second = create_profile_catalog(
+        ProfileCatalogCreate(
+            olt_id=catalog["olt"].id,
+            direction="upload",
+            profile_kind="tcont",
+            name="DEFAULT-UP-2",
+            service_type="internet",
+            maximum_kbps=200000,
+            is_default=True,
+        ),
+        db_session,
+    )
+
+    db_session.refresh(first)
+    db_session.refresh(second)
+
+    assert first.is_default is False
+    assert second.is_default is True
+    assert second.speed_kbps == 200000
+
+
 def test_nap_port_reserve_and_release(db_session, catalog):
     port = db_session.scalar(select(NapPort).where(NapPort.nap_id == catalog["nap"].id, NapPort.port_number == 1))
 
@@ -170,7 +215,14 @@ def test_nap_port_reserve_and_release(db_session, catalog):
 
 
 def test_provisioning_uses_speed_profile_and_blocks_occupied_nap_port(db_session, catalog):
-    onu_type = OnuType(olt_id=catalog["olt"].id, olt_code_snapshot=catalog["olt"].olt_code, name="VSOL", vendor_detected="VSOL", is_active=True)
+    onu_type = OnuType(
+        olt_id=catalog["olt"].id,
+        olt_code_snapshot=catalog["olt"].olt_code,
+        name="VSOL",
+        vendor_detected="VSOL",
+        is_active=True,
+        is_provisioning_allowed=True,
+    )
     speed = SpeedProfile(
         olt_id=catalog["olt"].id,
         olt_code_snapshot=catalog["olt"].olt_code,

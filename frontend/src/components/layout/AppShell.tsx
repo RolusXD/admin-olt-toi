@@ -9,6 +9,7 @@ const nav = [
   { label: "Dashboard", icon: Activity, href: "/" },
   { label: "Importacion inicial", icon: FileInput, href: "/importacion-inicial" },
   { label: "Prueba OLT Read-Only", icon: ShieldCheck, href: "/prueba-read-only" },
+  { label: "OLTs", icon: Network, href: "/olts" },
   { label: "ONUs", icon: Network, href: "/onus" },
   { label: "ONUs Pendientes", icon: ClipboardList, href: "/onus-pendientes" },
   { label: "Tipos ONU", icon: Boxes, href: "/onu-types" },

@@ -25,9 +25,13 @@ class OltBase(BaseModel):
     vendor: str = "ZTE"
     model: str = "C300"
     firmware: str = "V1.2.5P3"
+    hardware_version: str | None = None
+    software_version: str | None = None
+    pon_supported_types: str = "GPON"
     ip_address: str
     telnet_port: int = Field(default=23, ge=1)
     username: str
+    snmp_udp_port: int = Field(default=161, ge=1)
     connection_type: str = "telnet"
     status: str = "unknown"
 
@@ -47,6 +51,8 @@ class OltBase(BaseModel):
 
 class OltCreate(OltBase):
     password: str = Field(min_length=1)
+    snmp_ro_community: str | None = None
+    snmp_rw_community: str | None = None
 
     @field_validator("password")
     @classmethod
@@ -64,10 +70,16 @@ class OltUpdate(BaseModel):
     vendor: str | None = None
     model: str | None = None
     firmware: str | None = None
+    hardware_version: str | None = None
+    software_version: str | None = None
+    pon_supported_types: str | None = None
     ip_address: str | None = None
     telnet_port: int | None = Field(default=None, ge=1)
     username: str | None = None
     password: str | None = None
+    snmp_ro_community: str | None = None
+    snmp_rw_community: str | None = None
+    snmp_udp_port: int | None = Field(default=None, ge=1)
     connection_type: str | None = None
     status: str | None = None
 
@@ -206,9 +218,15 @@ class OnuTypeCreate(BaseModel):
     model: str = "C300"
     firmware: str = "V1.2.5P3"
     name: str
+    display_name: str | None = None
+    operational_alias: str | None = None
     vendor_detected: str | None = None
     model_detected: str | None = None
     technology: str = "GPON"
+    pon_type: str = "GPON"
+    channel_gpon: bool = True
+    channel_xgpon: bool = False
+    channel_xgspon: bool = False
     max_tcont: int | None = None
     max_gemport: int | None = None
     max_ports: int | None = None
@@ -219,7 +237,11 @@ class OnuTypeCreate(BaseModel):
     wifi_ports: int | None = None
     pots_ports: int | None = None
     rf_ports: int | None = None
+    allow_custom_profiles: bool = True
+    default_custom_profile_id: int | None = None
+    capability_mode: str = "bridging"
     is_active: bool = True
+    is_provisioning_allowed: bool = False
     source: str = "manual"
     notes: str | None = None
 
@@ -229,9 +251,15 @@ class OnuTypeUpdate(BaseModel):
     model: str | None = None
     firmware: str | None = None
     name: str | None = None
+    display_name: str | None = None
+    operational_alias: str | None = None
     vendor_detected: str | None = None
     model_detected: str | None = None
     technology: str | None = None
+    pon_type: str | None = None
+    channel_gpon: bool | None = None
+    channel_xgpon: bool | None = None
+    channel_xgspon: bool | None = None
     max_tcont: int | None = None
     max_gemport: int | None = None
     max_ports: int | None = None
@@ -242,7 +270,11 @@ class OnuTypeUpdate(BaseModel):
     wifi_ports: int | None = None
     pots_ports: int | None = None
     rf_ports: int | None = None
+    allow_custom_profiles: bool | None = None
+    default_custom_profile_id: int | None = None
+    capability_mode: str | None = None
     is_active: bool | None = None
+    is_provisioning_allowed: bool | None = None
     notes: str | None = None
 
 
@@ -335,6 +367,9 @@ class ProfileCatalogCreate(BaseModel):
     direction: str
     profile_kind: str
     name: str
+    service_type: str = "internet"
+    speed_kbps: int | None = None
+    is_default: bool = False
     type_value: int | None = None
     fixed_kbps: int | None = None
     assured_kbps: int | None = None
@@ -353,6 +388,9 @@ class ProfileCatalogUpdate(BaseModel):
     direction: str | None = None
     profile_kind: str | None = None
     name: str | None = None
+    service_type: str | None = None
+    speed_kbps: int | None = None
+    is_default: bool | None = None
     type_value: int | None = None
     fixed_kbps: int | None = None
     assured_kbps: int | None = None
@@ -372,6 +410,78 @@ class ProfileCatalogRead(ProfileCatalogCreate):
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProfileCatalogReadWithUsage(ProfileCatalogRead):
+    onu_count: int = 0
+
+
+class OltCardRead(BaseModel):
+    id: int
+    olt_id: int
+    slot_number: str
+    card_type: str | None = None
+    real_type: str | None = None
+    port_count: int | None = None
+    firmware: str | None = None
+    status: str
+    role: str | None = None
+    last_seen_at: datetime | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OltUplinkRead(BaseModel):
+    id: int
+    olt_id: int
+    interface_name: str
+    description: str | None = None
+    interface_type: str | None = None
+    admin_status: str
+    oper_status: str
+    negotiation: str | None = None
+    mtu: int | None = None
+    mode: str | None = None
+    allowed_vlans: str | None = None
+    pvid_untag: int | None = None
+    last_seen_at: datetime | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OltTechnicalSettingsRead(BaseModel):
+    id: int
+    olt_id: int
+    show_disabled_onus: bool
+    send_onu_description_to_olt: bool
+    dhcp_option82_enabled: bool
+    pppoe_plus_enabled: bool
+    dhcp_snooping_enabled: bool
+    ip_source_protection_enabled: bool
+    max_mac_per_onu: int
+    rx_warning_dbm: float
+    rx_critical_dbm: float
+    temperature_warning_c: float
+    temperature_critical_c: float
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PonPortTechnicalRead(PonPortRead):
+    pon_type: str = "GPON"
+    admin_status: str = "unknown"
+    oper_status: str = "unknown"
+    tx_power: float | None = None
+    range_label: str | None = None
+    online_onus: int = 0
+    total_onus: int = 0
+    load_percent: float = 0
+    avg_rx_power: float | None = None
+
+
+class VlanTechnicalRead(VlanRead):
+    onu_count: int = 0
+    used_iptv: bool = False
+    used_management_voip: bool = False
+    dhcp_snooping: bool = False
+    lan_to_lan: bool = False
 
 
 class ProvisioningTemplateCreate(BaseModel):

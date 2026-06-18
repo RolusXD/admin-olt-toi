@@ -8,9 +8,12 @@ import type {
   Nap,
   NapPort,
   Olt,
+  OltCard,
   OltInventorySummary,
   OltPowerSyncResult,
   OltSyncResult,
+  OltTechnicalSettings,
+  OltUplink,
   MonitoringExecution,
   MonitoringLatest,
   Onu,
@@ -79,6 +82,11 @@ export const api = {
   olts: (params: { environment?: string } = {}) => request<Olt[]>(`/olts${toQuery(params)}`),
   olt: (id: number | string) => request<Olt>(`/olts/${id}`),
   oltInventorySummary: (id: number | string) => request<OltInventorySummary>(`/olts/${id}/inventory-summary`),
+  oltCards: (id: number | string) => request<OltCard[]>(`/olts/${id}/cards`),
+  oltUplinks: (id: number | string) => request<OltUplink[]>(`/olts/${id}/uplinks`),
+  oltAdvanced: (id: number | string) => request<OltTechnicalSettings>(`/olts/${id}/advanced`),
+  oltPonPorts: (id: number | string) => request<PonPort[]>(`/olts/${id}/pon-ports`),
+  oltVlans: (id: number | string) => request<Vlan[]>(`/olts/${id}/vlans`),
   zones: (params: Record<string, string | number | undefined | null> = {}) => request<Zone[]>(`/zones${toQuery(params)}`),
   naps: (params: Record<string, string | number | undefined | null> = {}) => request<Nap[]>(`/naps${toQuery(params)}`),
   napPorts: (params: Record<string, string | number | undefined | null> = {}) => request<NapPort[]>(`/nap-ports${toQuery(params)}`),
@@ -139,6 +147,8 @@ export const api = {
     request<Nap>("/naps", { method: "POST", body: JSON.stringify(payload) }),
   createOnuType: (payload: Record<string, unknown>) =>
     request<OnuType>("/onu-types", { method: "POST", body: JSON.stringify(payload) }),
+  updateOnuType: (id: number | string, payload: Record<string, unknown>) =>
+    request<OnuType>(`/onu-types/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
   createSpeedProfile: (payload: Record<string, unknown>) =>
     request<SpeedProfile>("/speed-profiles", { method: "POST", body: JSON.stringify(payload) }),
   createProfileCatalog: (payload: Record<string, unknown>) =>

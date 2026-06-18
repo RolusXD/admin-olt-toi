@@ -29,6 +29,9 @@ class ParsedProfileCatalog:
     direction: str
     profile_kind: str
     name: str
+    service_type: str = "internet"
+    speed_kbps: int | None = None
+    is_default: bool = False
     type_value: int | None = None
     fixed_kbps: int | None = None
     assured_kbps: int | None = None
@@ -42,6 +45,10 @@ class ParsedOnuType:
     name: str
     vendor_detected: str | None = None
     technology: str = "gpon"
+    pon_type: str = "GPON"
+    channel_gpon: bool = True
+    channel_xgpon: bool = False
+    channel_xgspon: bool = False
     max_tcont: int | None = None
     max_gemport: int | None = None
     max_ports: int | None = None
@@ -52,6 +59,9 @@ class ParsedOnuType:
     wifi_ports: int | None = None
     pots_ports: int | None = None
     rf_ports: int | None = None
+    allow_custom_profiles: bool = True
+    default_custom_profile_id: int | None = None
+    capability_mode: str = "bridging"
 
 
 @dataclass(frozen=True)
@@ -61,6 +71,20 @@ class ParsedPonPort:
     shelf: int
     slot: int
     port: int
+
+
+@dataclass(frozen=True)
+class ParsedOltUplink:
+    interface_name: str
+    description: str | None = None
+    interface_type: str | None = None
+    admin_status: str = "unknown"
+    oper_status: str = "unknown"
+    negotiation: str | None = None
+    mtu: int | None = None
+    mode: str | None = None
+    allowed_vlans: str | None = None
+    pvid_untag: int | None = None
 
 
 @dataclass
@@ -98,6 +122,7 @@ class RunningConfigParseResult:
     profile_catalogs: list[ParsedProfileCatalog]
     onu_types: list[ParsedOnuType]
     pon_ports: list[ParsedPonPort]
+    uplinks: list[ParsedOltUplink]
     onus: list[ParsedOnu]
     warnings: list[str]
 
@@ -110,6 +135,7 @@ class RunningConfigParseResult:
             "profile_catalogs": len(self.profile_catalogs),
             "onu_types": len(self.onu_types),
             "pon_ports": len(self.pon_ports),
+            "uplinks": len(self.uplinks),
             "onus": len(self.onus),
             "zones_detected": zones,
             "naps_detected": naps,
@@ -124,8 +150,9 @@ def parse_running_config(raw_config: str) -> RunningConfigParseResult:
     profile_catalogs = _parse_profile_catalogs(profiles)
     onu_types = _parse_onu_types(lines)
     pon_ports = _parse_pon_ports(lines)
+    uplinks = _parse_uplinks(lines)
     onus, warnings = _parse_onus(lines)
-    return RunningConfigParseResult(vlans, profiles, profile_catalogs, onu_types, pon_ports, onus, warnings)
+    return RunningConfigParseResult(vlans, profiles, profile_catalogs, onu_types, pon_ports, uplinks, onus, warnings)
 
 
 def _parse_vlans(lines: list[str]) -> list[ParsedVlan]:
@@ -223,6 +250,10 @@ def _parse_onu_types(lines: list[str]) -> list[ParsedOnuType]:
                     "name": name,
                     "vendor_detected": _detect_vendor(name),
                     "technology": technology,
+                    "pon_type": technology.upper(),
+                    "channel_gpon": technology.lower() == "gpon",
+                    "channel_xgpon": "xgpon" in technology.lower() and "xgs" not in technology.lower(),
+                    "channel_xgspon": "xgs" in technology.lower(),
                     "max_tcont": None,
                     "max_gemport": None,
                     "max_ports": None,
@@ -233,10 +264,17 @@ def _parse_onu_types(lines: list[str]) -> list[ParsedOnuType]:
                     "wifi_ports": None,
                     "pots_ports": None,
                     "rf_ports": None,
+                    "allow_custom_profiles": True,
+                    "default_custom_profile_id": None,
+                    "capability_mode": "bridging",
                 },
             )
             tail = match.group(3)
             current["technology"] = technology
+            current["pon_type"] = technology.upper()
+            current["channel_gpon"] = technology.lower() == "gpon"
+            current["channel_xgpon"] = "xgpon" in technology.lower() and "xgs" not in technology.lower()
+            current["channel_xgspon"] = "xgs" in technology.lower()
             if "max-tcont" in tail.lower():
                 current["max_tcont"] = _last_int(tail) or current["max_tcont"]
             if "max-gemport" in tail.lower():
@@ -261,6 +299,10 @@ def _parse_onu_types(lines: list[str]) -> list[ParsedOnuType]:
                     "name": name,
                     "vendor_detected": _detect_vendor(name),
                     "technology": "gpon",
+                    "pon_type": "GPON",
+                    "channel_gpon": True,
+                    "channel_xgpon": False,
+                    "channel_xgspon": False,
                     "max_tcont": None,
                     "max_gemport": None,
                     "max_ports": None,
@@ -271,6 +313,9 @@ def _parse_onu_types(lines: list[str]) -> list[ParsedOnuType]:
                     "wifi_ports": None,
                     "pots_ports": None,
                     "rf_ports": None,
+                    "allow_custom_profiles": True,
+                    "default_custom_profile_id": None,
+                    "capability_mode": "bridging",
                 },
             )
             buckets = interfaces.setdefault(name, {"eth": set(), "wifi": set(), "pots": set(), "rf": set()})
@@ -288,6 +333,12 @@ def _parse_onu_types(lines: list[str]) -> list[ParsedOnuType]:
         current["wifi_ports"] = len(buckets["wifi"])
         current["pots_ports"] = len(buckets["pots"])
         current["rf_ports"] = len(buckets["rf"])
+        current["capability_mode"] = _infer_capability_mode(
+            current["ethernet_ports"] or 0,
+            current["wifi_ports"] or 0,
+            current["pots_ports"] or 0,
+            current["rf_ports"] or 0,
+        )
     return [ParsedOnuType(**value) for value in by_name.values()]
 
 
@@ -300,6 +351,7 @@ def _parse_profile_catalogs(profiles: list[ParsedGponProfile]) -> list[ParsedPro
                     direction="upload",
                     profile_kind="tcont",
                     name=profile.name,
+                    speed_kbps=profile.maximum_kbps or profile.upstream_rate,
                     type_value=profile.type_value,
                     fixed_kbps=profile.fixed_kbps,
                     assured_kbps=profile.assured_kbps,
@@ -312,6 +364,7 @@ def _parse_profile_catalogs(profiles: list[ParsedGponProfile]) -> list[ParsedPro
                     direction="download",
                     profile_kind="traffic",
                     name=profile.name,
+                    speed_kbps=profile.pir_kbps or profile.downstream_rate,
                     sir_kbps=profile.sir_kbps,
                     pir_kbps=profile.pir_kbps or profile.downstream_rate,
                 )
@@ -333,6 +386,53 @@ def _parse_pon_ports(lines: list[str]) -> list[ParsedPonPort]:
         ports.append(ParsedPonPort(interface_name=interface_name, rack=rack, shelf=shelf, slot=shelf, port=port))
         seen.add(interface_name)
     return ports
+
+
+def _parse_uplinks(lines: list[str]) -> list[ParsedOltUplink]:
+    uplinks: dict[str, dict] = {}
+    current: dict | None = None
+    for raw in lines:
+        line = raw.strip()
+        match = re.match(r"interface\s+((?:xgei|gei)_?\d+/\d+/\d+(?::\d+)?)\b", line, re.I)
+        if match:
+            if current:
+                uplinks[current["interface_name"]] = current
+            interface_name = match.group(1)
+            current = {
+                "interface_name": interface_name,
+                "description": None,
+                "interface_type": "xgei" if interface_name.lower().startswith("xgei") else "gei",
+                "admin_status": "unknown",
+                "oper_status": "unknown",
+                "negotiation": None,
+                "mtu": None,
+                "mode": None,
+                "allowed_vlans": None,
+                "pvid_untag": None,
+            }
+            continue
+        if not current:
+            continue
+        if line.startswith("!"):
+            uplinks[current["interface_name"]] = current
+            current = None
+            continue
+        if line.startswith("description "):
+            current["description"] = line.removeprefix("description ").strip()
+        elif line.startswith("mtu "):
+            current["mtu"] = _first_int(line)
+        elif "switchport mode" in line:
+            mode = re.search(r"switchport\s+mode\s+(\S+)", line, re.I)
+            current["mode"] = mode.group(1) if mode else current["mode"]
+        elif "switchport trunk vlan" in line or "switchport hybrid vlan" in line:
+            current["allowed_vlans"] = line
+        elif "pvid" in line.lower():
+            current["pvid_untag"] = _last_int(line)
+        elif "negotiation" in line.lower():
+            current["negotiation"] = line
+    if current:
+        uplinks[current["interface_name"]] = current
+    return [ParsedOltUplink(**value) for value in uplinks.values()]
 
 
 def _parse_onus(lines: list[str]) -> tuple[list[ParsedOnu], list[str]]:
@@ -473,3 +573,11 @@ def _detect_vendor(name: str) -> str | None:
         if vendor in upper:
             return vendor
     return None
+
+
+def _infer_capability_mode(ethernet_ports: int, wifi_ports: int, pots_ports: int, rf_ports: int) -> str:
+    if wifi_ports > 0:
+        return "bridging_routing"
+    if ethernet_ports > 1 or pots_ports > 0 or rf_ports > 0:
+        return "bridging_routing"
+    return "bridging"

@@ -7,9 +7,13 @@ export type Olt = {
   vendor: string;
   model: string;
   firmware: string;
+  hardware_version?: string | null;
+  software_version?: string | null;
+  pon_supported_types: string;
   ip_address: string;
   telnet_port: number;
   username: string;
+  snmp_udp_port: number;
   connection_type: string;
   status: string;
   has_password: boolean;
@@ -56,6 +60,11 @@ export type Nap = {
   is_active?: boolean;
   source?: string;
   notes?: string | null;
+  onu_count?: number;
+  used_iptv?: boolean;
+  used_management_voip?: boolean;
+  dhcp_snooping?: boolean;
+  lan_to_lan?: boolean;
 };
 
 export type Vlan = {
@@ -72,6 +81,11 @@ export type Vlan = {
   is_active?: boolean;
   source?: string;
   notes?: string | null;
+  onu_count?: number;
+  used_iptv?: boolean;
+  used_management_voip?: boolean;
+  dhcp_snooping?: boolean;
+  lan_to_lan?: boolean;
 };
 
 export type OnuType = {
@@ -85,9 +99,15 @@ export type OnuType = {
   model: string;
   firmware: string;
   name: string;
+  display_name?: string | null;
+  operational_alias?: string | null;
   vendor_detected?: string | null;
   model_detected?: string | null;
   technology: string;
+  pon_type: string;
+  channel_gpon: boolean;
+  channel_xgpon: boolean;
+  channel_xgspon: boolean;
   max_tcont?: number | null;
   max_gemport?: number | null;
   max_ports?: number | null;
@@ -98,7 +118,11 @@ export type OnuType = {
   wifi_ports?: number | null;
   pots_ports?: number | null;
   rf_ports?: number | null;
+  allow_custom_profiles: boolean;
+  default_custom_profile_id?: number | null;
+  capability_mode: "bridging" | "routing" | "bridging_routing" | string;
   is_active: boolean;
+  is_provisioning_allowed: boolean;
   source: string;
   notes?: string | null;
 };
@@ -142,6 +166,9 @@ export type ProfileCatalog = {
   direction: "upload" | "download" | string;
   profile_kind: "tcont" | "traffic" | string;
   name: string;
+  service_type: "internet" | "gestion" | "voip" | "iptv" | "otro" | string;
+  speed_kbps?: number | null;
+  is_default: boolean;
   type_value?: number | null;
   fixed_kbps?: number | null;
   assured_kbps?: number | null;
@@ -153,6 +180,7 @@ export type ProfileCatalog = {
   notes?: string | null;
   created_at: string;
   updated_at: string;
+  onu_count?: number;
 };
 
 export type NapPort = {
@@ -196,6 +224,60 @@ export type PonPort = {
   port: number;
   interface_name?: string | null;
   description?: string | null;
+  pon_type?: string;
+  admin_status?: string;
+  oper_status?: string;
+  tx_power?: number | null;
+  range_label?: string | null;
+  online_onus?: number;
+  total_onus?: number;
+  load_percent?: number;
+  avg_rx_power?: number | null;
+};
+
+export type OltCard = {
+  id: number;
+  olt_id: number;
+  slot_number: string;
+  card_type?: string | null;
+  real_type?: string | null;
+  port_count?: number | null;
+  firmware?: string | null;
+  status: string;
+  role?: string | null;
+  last_seen_at?: string | null;
+};
+
+export type OltUplink = {
+  id: number;
+  olt_id: number;
+  interface_name: string;
+  description?: string | null;
+  interface_type?: string | null;
+  admin_status: string;
+  oper_status: string;
+  negotiation?: string | null;
+  mtu?: number | null;
+  mode?: string | null;
+  allowed_vlans?: string | null;
+  pvid_untag?: number | null;
+  last_seen_at?: string | null;
+};
+
+export type OltTechnicalSettings = {
+  id: number;
+  olt_id: number;
+  show_disabled_onus: boolean;
+  send_onu_description_to_olt: boolean;
+  dhcp_option82_enabled: boolean;
+  pppoe_plus_enabled: boolean;
+  dhcp_snooping_enabled: boolean;
+  ip_source_protection_enabled: boolean;
+  max_mac_per_onu: number;
+  rx_warning_dbm: number;
+  rx_critical_dbm: number;
+  temperature_warning_c: number;
+  temperature_critical_c: number;
 };
 
 export type Onu = {

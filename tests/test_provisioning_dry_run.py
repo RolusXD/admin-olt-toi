@@ -106,7 +106,17 @@ def catalog(db_session):
                 name="SMARTOLT-1G-DOWN",
                 is_active=True,
             ),
-            OnuType(olt_id=olt.id, name="VSOL", vendor_detected="VSOL", max_tcont=None, max_gemport=None, max_ports=None),
+            OnuType(
+                olt_id=olt.id,
+                name="Prueba-vSol-no-usar",
+                display_name="VSOL / 2 LAN + WiFi",
+                operational_alias="VSOL",
+                vendor_detected="VSOL",
+                max_tcont=8,
+                max_gemport=32,
+                max_ports=2,
+                is_provisioning_allowed=True,
+            ),
             ProvisioningTemplate(
                 name="ZTE C300 V1.2.5P3 default dry-run",
                 vendor="ZTE",
@@ -188,7 +198,8 @@ def test_create_validate_generate_and_approve_plan(db_session, catalog):
     assert approved.suggested_onu_id == 1
     assert approved.validation_result.is_valid is True
     assert "interface gpon-olt_1/2/15" in approved.generated_cli
-    assert "onu 1 type VSOL sn GPON00CBAC10" in approved.generated_cli
+    assert approved.onu_type == "Prueba-vSol-no-usar"
+    assert "onu 1 type Prueba-vSol-no-usar sn GPON00CBAC10" in approved.generated_cli
     assert "switchport vlan 200 tag vport 1" in approved.generated_cli
     assert db_session.scalar(select(ProvisioningPlan)).serial_number == "GPON00CBAC10"
 
@@ -290,7 +301,30 @@ def test_detects_next_available_onu_id(db_session, catalog):
     _, result = ProvisioningService(db_session).validate_and_update(plan.id)
 
     assert result.suggested_onu_id == 4
-    assert "onu 4 type VSOL sn GPON00CBAC10" in result.cli_preview
+    assert "onu 4 type Prueba-vSol-no-usar sn GPON00CBAC10" in result.cli_preview
+
+
+def test_onu_type_alias_uses_real_name_in_cli(db_session, catalog):
+    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id))
+    _, result = ProvisioningService(db_session).validate_and_update(plan.id)
+
+    assert result.is_valid is True
+    assert plan.onu_type == "Prueba-vSol-no-usar"
+    assert "type Prueba-vSol-no-usar sn GPON00CBAC10" in result.cli_preview
+    assert "type VSOL sn" not in result.cli_preview
+    assert not any("Tipo ONU detectado" in warning for warning in result.warnings)
+
+
+def test_disabled_onu_type_blocks_provisioning(db_session, catalog):
+    onu_type = db_session.scalar(select(OnuType).where(OnuType.operational_alias == "VSOL"))
+    onu_type.is_provisioning_allowed = False
+    db_session.commit()
+
+    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id))
+    _, result = ProvisioningService(db_session).validate_and_update(plan.id)
+
+    assert result.is_valid is False
+    assert any("no esta habilitado para aprovisionamiento" in error for error in result.errors)
 
 
 def test_detects_occupied_selected_onu_id(db_session, catalog):

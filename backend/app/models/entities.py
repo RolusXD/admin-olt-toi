@@ -22,10 +22,16 @@ class Olt(Base, TimestampMixin):
     vendor: Mapped[str] = mapped_column(String(40), default="ZTE")
     model: Mapped[str] = mapped_column(String(80), default="C300")
     firmware: Mapped[str] = mapped_column(String(80), default="V1.2.5P3")
+    hardware_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    software_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    pon_supported_types: Mapped[str] = mapped_column(String(40), default="GPON")
     ip_address: Mapped[str] = mapped_column(String(64))
     telnet_port: Mapped[int] = mapped_column(Integer, default=23)
     username: Mapped[str] = mapped_column(String(120))
     password_encrypted: Mapped[str] = mapped_column(Text)
+    snmp_ro_community_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    snmp_rw_community_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    snmp_udp_port: Mapped[int] = mapped_column(Integer, default=161)
     connection_type: Mapped[str] = mapped_column(String(30), default="telnet")
     status: Mapped[str] = mapped_column(String(30), default="unknown")
     initial_import_status: Mapped[str] = mapped_column(String(40), default="pending")
@@ -119,9 +125,15 @@ class OnuType(Base):
     model: Mapped[str] = mapped_column(String(80), default="C300")
     firmware: Mapped[str] = mapped_column(String(80), default="V1.2.5P3")
     name: Mapped[str] = mapped_column(String(120))
+    display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    operational_alias: Mapped[str | None] = mapped_column(String(120), nullable=True)
     vendor_detected: Mapped[str | None] = mapped_column(String(80))
     model_detected: Mapped[str | None] = mapped_column(String(80), nullable=True)
     technology: Mapped[str] = mapped_column(String(30), default="GPON")
+    pon_type: Mapped[str] = mapped_column(String(30), default="GPON")
+    channel_gpon: Mapped[bool] = mapped_column(Boolean, default=True)
+    channel_xgpon: Mapped[bool] = mapped_column(Boolean, default=False)
+    channel_xgspon: Mapped[bool] = mapped_column(Boolean, default=False)
     max_tcont: Mapped[int | None] = mapped_column(Integer)
     max_gemport: Mapped[int | None] = mapped_column(Integer)
     max_ports: Mapped[int | None] = mapped_column(Integer)
@@ -132,7 +144,11 @@ class OnuType(Base):
     wifi_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pots_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rf_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    allow_custom_profiles: Mapped[bool] = mapped_column(Boolean, default=True)
+    default_custom_profile_id: Mapped[int | None] = mapped_column(ForeignKey("profile_catalogs.id", ondelete="SET NULL"), nullable=True)
+    capability_mode: Mapped[str] = mapped_column(String(40), default="bridging")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_provisioning_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String(40), default="imported")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     olt: Mapped[Olt] = relationship()
@@ -202,6 +218,9 @@ class ProfileCatalog(Base, TimestampMixin):
     direction: Mapped[str] = mapped_column(String(30))
     profile_kind: Mapped[str] = mapped_column(String(40))
     name: Mapped[str] = mapped_column(String(120))
+    service_type: Mapped[str] = mapped_column(String(40), default="internet")
+    speed_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     type_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fixed_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     assured_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -291,6 +310,11 @@ class PonPort(Base):
     port: Mapped[int] = mapped_column(Integer)
     interface_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     description: Mapped[str | None] = mapped_column(Text)
+    pon_type: Mapped[str] = mapped_column(String(30), default="GPON")
+    admin_status: Mapped[str] = mapped_column(String(30), default="unknown")
+    oper_status: Mapped[str] = mapped_column(String(30), default="unknown")
+    tx_power: Mapped[float | None] = mapped_column(Float, nullable=True)
+    range_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     olt: Mapped[Olt] = relationship(back_populates="pon_ports")
 
@@ -363,6 +387,66 @@ class Onu(Base, TimestampMixin):
     @property
     def olt_environment(self) -> str | None:
         return self.olt.environment if self.olt else None
+
+
+class OltCard(Base, TimestampMixin):
+    __tablename__ = "olt_cards"
+    __table_args__ = (UniqueConstraint("olt_id", "slot_number", name="uq_olt_cards_olt_slot"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
+    slot_number: Mapped[str] = mapped_column(String(40))
+    card_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    real_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    port_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    firmware: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="unknown")
+    role: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    olt: Mapped[Olt] = relationship()
+
+
+class OltUplink(Base, TimestampMixin):
+    __tablename__ = "olt_uplinks"
+    __table_args__ = (UniqueConstraint("olt_id", "interface_name", name="uq_olt_uplinks_olt_interface"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
+    interface_name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interface_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    admin_status: Mapped[str] = mapped_column(String(30), default="unknown")
+    oper_status: Mapped[str] = mapped_column(String(30), default="unknown")
+    negotiation: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    mtu: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mode: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    allowed_vlans: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pvid_untag: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    olt: Mapped[Olt] = relationship()
+
+
+class OltTechnicalSettings(Base, TimestampMixin):
+    __tablename__ = "olt_technical_settings"
+    __table_args__ = (UniqueConstraint("olt_id", name="uq_olt_technical_settings_olt"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
+    show_disabled_onus: Mapped[bool] = mapped_column(Boolean, default=True)
+    send_onu_description_to_olt: Mapped[bool] = mapped_column(Boolean, default=True)
+    dhcp_option82_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    pppoe_plus_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    dhcp_snooping_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    ip_source_protection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_mac_per_onu: Mapped[int] = mapped_column(Integer, default=8)
+    rx_warning_dbm: Mapped[float] = mapped_column(Float, default=-24.0)
+    rx_critical_dbm: Mapped[float] = mapped_column(Float, default=-27.0)
+    temperature_warning_c: Mapped[float] = mapped_column(Float, default=70.0)
+    temperature_critical_c: Mapped[float] = mapped_column(Float, default=80.0)
+
+    olt: Mapped[Olt] = relationship()
 
 
 class UnauthorizedOnu(Base):

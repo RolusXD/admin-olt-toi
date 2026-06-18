@@ -2,7 +2,7 @@ from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, sta
 from sqlalchemy import func, select
 
 from app.api.deps import DbSession, get_olt_or_404
-from app.models.entities import DriverCommandLog, GponProfile, ImportJob, Olt, Onu, PonPort, Vlan
+from app.models.entities import DriverCommandLog, GponProfile, ImportJob, Olt, OltCard, OltTechnicalSettings, OltUplink, Onu, PonPort, Vlan
 from app.repositories.entities import OltRepository
 from app.schemas.entities import (
     ImportConfirmResponse,
@@ -11,14 +11,19 @@ from app.schemas.entities import (
     ImportPreviewResponse,
     ImportPreviewTextRequest,
     OltCreate,
+    OltCardRead,
     OltPowerSyncResult,
     OltInventorySummary,
     OltRead,
     OltSyncResult,
+    OltTechnicalSettingsRead,
+    OltUplinkRead,
     OltUpdate,
+    PonPortTechnicalRead,
     TelnetDebugResult,
     TelnetTestResult,
     UnauthorizedOnuDiscoveryResult,
+    VlanTechnicalRead,
 )
 from app.services.initial_import_service import InitialImportService
 from app.services.onu_discovery_service import OnuDiscoveryService
@@ -47,6 +52,73 @@ def create_olt(payload: OltCreate, db: DbSession):
 @router.get("/{olt_id}", response_model=OltRead)
 def get_olt(olt_id: int, db: DbSession):
     return get_olt_or_404(db, olt_id)
+
+
+@router.get("/{olt_id}/cards", response_model=list[OltCardRead])
+def olt_cards(olt_id: int, db: DbSession) -> list[OltCard]:
+    get_olt_or_404(db, olt_id)
+    return list(db.scalars(select(OltCard).where(OltCard.olt_id == olt_id).order_by(OltCard.slot_number)))
+
+
+@router.get("/{olt_id}/uplinks", response_model=list[OltUplinkRead])
+def olt_uplinks(olt_id: int, db: DbSession) -> list[OltUplink]:
+    get_olt_or_404(db, olt_id)
+    return list(db.scalars(select(OltUplink).where(OltUplink.olt_id == olt_id).order_by(OltUplink.interface_name)))
+
+
+@router.get("/{olt_id}/advanced", response_model=OltTechnicalSettingsRead)
+def olt_advanced(olt_id: int, db: DbSession) -> OltTechnicalSettings:
+    get_olt_or_404(db, olt_id)
+    settings = db.scalar(select(OltTechnicalSettings).where(OltTechnicalSettings.olt_id == olt_id))
+    if not settings:
+        settings = OltTechnicalSettings(olt_id=olt_id)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+@router.get("/{olt_id}/pon-ports", response_model=list[PonPortTechnicalRead])
+def olt_pon_ports(olt_id: int, db: DbSession) -> list[dict]:
+    get_olt_or_404(db, olt_id)
+    ports = list(db.scalars(select(PonPort).where(PonPort.olt_id == olt_id).order_by(PonPort.slot, PonPort.port)))
+    rows = []
+    for port in ports:
+        total = db.scalar(select(func.count()).select_from(Onu).where(Onu.pon_port_id == port.id)) or 0
+        online = db.scalar(select(func.count()).select_from(Onu).where(Onu.pon_port_id == port.id, Onu.status.in_(["online", "working"]))) or 0
+        avg_rx = db.scalar(select(func.avg(Onu.rx_power)).where(Onu.pon_port_id == port.id, Onu.rx_power.is_not(None)))
+        data = PonPortTechnicalRead.model_validate(port).model_dump()
+        data.update(
+            {
+                "online_onus": online,
+                "total_onus": total,
+                "load_percent": round((total / 128) * 100, 2) if total else 0,
+                "avg_rx_power": round(float(avg_rx), 2) if avg_rx is not None else None,
+            }
+        )
+        rows.append(data)
+    return rows
+
+
+@router.get("/{olt_id}/vlans", response_model=list[VlanTechnicalRead])
+def olt_vlans(olt_id: int, db: DbSession) -> list[dict]:
+    get_olt_or_404(db, olt_id)
+    rows = []
+    for vlan in db.scalars(select(Vlan).where(Vlan.olt_id == olt_id).order_by(Vlan.vlan_id)):
+        count = db.scalar(select(func.count()).select_from(Onu).where(Onu.olt_id == olt_id, Onu.vlan == vlan.vlan_id)) or 0
+        data = VlanTechnicalRead.model_validate(vlan).model_dump()
+        service = (vlan.service_type or "").lower()
+        data.update(
+            {
+                "onu_count": count,
+                "used_iptv": service == "iptv",
+                "used_management_voip": service in {"management", "voip", "gestion"},
+                "dhcp_snooping": False,
+                "lan_to_lan": False,
+            }
+        )
+        rows.append(data)
+    return rows
 
 
 @router.get("/{olt_id}/inventory-summary", response_model=OltInventorySummary)

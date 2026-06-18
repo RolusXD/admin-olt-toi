@@ -256,7 +256,12 @@ export default function ProvisioningPage() {
                 label="Tipo ONU"
                 items={onuTypes.data
                   .filter((type) => !selectedOltId || String(type.olt_id) === selectedOltId)
-                  .map((type) => ({ value: type.name, label: `${type.name} ${type.vendor_detected ?? ""}` }))}
+                  .map((type) => ({
+                    value: type.name,
+                    label: `${type.display_name || type.operational_alias || type.name} - ZTE: ${type.name}${
+                      type.is_provisioning_allowed ? "" : " (no permitido)"
+                    }`,
+                  }))}
               />
               <Input name="selected_onu_id" placeholder="ONU ID seleccionado (opcional)" type="number" min={1} />
               <Select

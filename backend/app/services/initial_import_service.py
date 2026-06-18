@@ -14,6 +14,8 @@ from app.models.entities import (
     Nap,
     NapPort,
     Olt,
+    OltTechnicalSettings,
+    OltUplink,
     Onu,
     OnuType,
     PonPort,
@@ -125,6 +127,7 @@ class InitialImportService:
             "gpon_profiles_upserted": 0,
             "onu_types_upserted": 0,
             "pon_ports_upserted": 0,
+            "uplinks_upserted": 0,
             "onus_upserted": 0,
             "zones_upserted": 0,
             "naps_upserted": 0,
@@ -148,6 +151,10 @@ class InitialImportService:
         for pon_port in parsed.pon_ports:
             self._upsert_pon_port(olt.id, pon_port)
             counters["pon_ports_upserted"] += 1
+        for uplink in parsed.uplinks:
+            self._upsert_uplink(olt.id, uplink)
+            counters["uplinks_upserted"] += 1
+        self._ensure_technical_settings(olt.id)
         for onu in parsed.onus:
             zone, zone_created = self._ensure_zone(onu.parsed_zone_name)
             nap, nap_created = self._ensure_nap(zone, onu.parsed_nap_name)
@@ -176,6 +183,7 @@ class InitialImportService:
             "gpon_profiles": base["gpon_profiles"],
             "onu_types": base["onu_types"],
             "pon_ports": base["pon_ports"],
+            "uplinks": base.get("uplinks", 0),
             "onus": base["onus"],
             "zones_detected": base["zones_detected"],
             "naps_detected": base["naps_detected"],
@@ -239,6 +247,10 @@ class InitialImportService:
         onu_type.firmware = olt.firmware
         onu_type.vendor_detected = parsed.vendor_detected
         onu_type.technology = parsed.technology.upper()
+        onu_type.pon_type = parsed.pon_type.upper()
+        onu_type.channel_gpon = parsed.channel_gpon
+        onu_type.channel_xgpon = parsed.channel_xgpon
+        onu_type.channel_xgspon = parsed.channel_xgspon
         onu_type.max_tcont = parsed.max_tcont
         onu_type.max_gemport = parsed.max_gemport
         onu_type.max_ports = parsed.max_ports
@@ -249,6 +261,9 @@ class InitialImportService:
         onu_type.wifi_ports = parsed.wifi_ports
         onu_type.pots_ports = parsed.pots_ports
         onu_type.rf_ports = parsed.rf_ports
+        onu_type.allow_custom_profiles = parsed.allow_custom_profiles
+        onu_type.default_custom_profile_id = parsed.default_custom_profile_id
+        onu_type.capability_mode = parsed.capability_mode
         onu_type.source = "imported"
         onu_type.is_active = True
         return onu_type
@@ -271,6 +286,9 @@ class InitialImportService:
         catalog.model = olt.model
         catalog.firmware = olt.firmware
         catalog.direction = parsed.direction
+        catalog.service_type = parsed.service_type
+        catalog.speed_kbps = parsed.speed_kbps
+        catalog.is_default = parsed.is_default
         catalog.type_value = parsed.type_value
         catalog.fixed_kbps = parsed.fixed_kbps
         catalog.assured_kbps = parsed.assured_kbps
@@ -291,7 +309,32 @@ class InitialImportService:
         pon.slot = parsed.slot
         pon.port = parsed.port
         pon.interface_name = parsed.interface_name
+        pon.pon_type = "GPON"
         return pon
+
+    def _upsert_uplink(self, olt_id: int, parsed) -> OltUplink:
+        uplink = self.db.scalar(select(OltUplink).where(OltUplink.olt_id == olt_id, OltUplink.interface_name == parsed.interface_name))
+        if not uplink:
+            uplink = OltUplink(olt_id=olt_id, interface_name=parsed.interface_name)
+            self.db.add(uplink)
+        uplink.description = parsed.description
+        uplink.interface_type = parsed.interface_type
+        uplink.admin_status = parsed.admin_status
+        uplink.oper_status = parsed.oper_status
+        uplink.negotiation = parsed.negotiation
+        uplink.mtu = parsed.mtu
+        uplink.mode = parsed.mode
+        uplink.allowed_vlans = parsed.allowed_vlans
+        uplink.pvid_untag = parsed.pvid_untag
+        uplink.last_seen_at = datetime.now(UTC)
+        return uplink
+
+    def _ensure_technical_settings(self, olt_id: int) -> OltTechnicalSettings:
+        settings = self.db.scalar(select(OltTechnicalSettings).where(OltTechnicalSettings.olt_id == olt_id))
+        if not settings:
+            settings = OltTechnicalSettings(olt_id=olt_id)
+            self.db.add(settings)
+        return settings
 
     def _ensure_zone(self, name: str | None) -> tuple[Zone | None, bool]:
         if not name:
@@ -427,16 +470,36 @@ class InitialImportService:
 
     def _ensure_nap_ports(self, nap: Nap) -> None:
         existing = set(self.db.scalars(select(NapPort.port_number).where(NapPort.nap_id == nap.id)))
+        pending = {
+            item.port_number
+            for item in self.db.new
+            if isinstance(item, NapPort) and item.nap_id == nap.id and item.port_number is not None
+        }
+        existing.update(pending)
+        created = False
         for port_number in range(1, (nap.capacity or 16) + 1):
             if port_number not in existing:
                 self.db.add(NapPort(nap_id=nap.id, port_number=port_number, label=f"Puerto {port_number}", status="free"))
+                created = True
+        if created:
+            self.db.flush()
 
     def _occupy_nap_port(self, nap: Nap, onu: Onu) -> None:
         self._ensure_nap_ports(nap)
         port = self.db.scalar(select(NapPort).where(NapPort.nap_id == nap.id, NapPort.port_number == onu.nap_port))
         if not port:
+            port = next(
+                (
+                    item
+                    for item in self.db.new
+                    if isinstance(item, NapPort) and item.nap_id == nap.id and item.port_number == onu.nap_port
+                ),
+                None,
+            )
+        if not port:
             port = NapPort(nap_id=nap.id, port_number=onu.nap_port, label=f"Puerto {onu.nap_port}")
             self.db.add(port)
+            self.db.flush()
         port.status = "occupied"
         port.onu_id = onu.id
         port.customer_name_snapshot = onu.customer_name
