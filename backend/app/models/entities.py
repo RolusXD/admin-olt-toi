@@ -384,6 +384,7 @@ class Onu(Base, TimestampMixin):
     external_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     description_parse_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     description_parse_warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    service_mode_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     source: Mapped[str] = mapped_column(String(40), default="manual")
     import_source: Mapped[str] = mapped_column(String(40), default="manual")
 
@@ -487,6 +488,7 @@ class UnauthorizedOnu(Base):
     serial_number: Mapped[str] = mapped_column(String(80))
     detected_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
     detected_vendor: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    suggested_service_mode_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="pending")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -566,6 +568,33 @@ class ProvisioningTemplate(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class OnuServiceModeTemplate(Base, TimestampMixin):
+    __tablename__ = "onu_service_mode_templates"
+    __table_args__ = (UniqueConstraint("olt_id", "mode_code", name="uq_onu_service_modes_olt_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
+    vendor: Mapped[str] = mapped_column(String(40), default="ZTE")
+    model: Mapped[str] = mapped_column(String(80), default="C300")
+    firmware: Mapped[str] = mapped_column(String(80), default="V1.2.5P3")
+    mode_code: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vlan_mode: Mapped[str] = mapped_column(String(30), default="tag")
+    dhcp_source: Mapped[str] = mapped_column(String(40), default="from-internet")
+    use_iphost: Mapped[bool] = mapped_column(Boolean, default=False)
+    use_veip: Mapped[bool] = mapped_column(Boolean, default=True)
+    use_vlan_filter: Mapped[bool] = mapped_column(Boolean, default=False)
+    use_loop_detect: Mapped[bool] = mapped_column(Boolean, default=False)
+    disable_wifi: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_for_provisioning: Mapped[bool] = mapped_column(Boolean, default=False)
+    template_body: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(40), default="imported")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    olt: Mapped[Olt] = relationship()
+
+
 class ProvisioningPlan(Base, TimestampMixin):
     __tablename__ = "provisioning_plans"
 
@@ -594,6 +623,10 @@ class ProvisioningPlan(Base, TimestampMixin):
     ethernet_port: Mapped[str] = mapped_column(String(40), default="eth_0/1")
     dhcp_mode: Mapped[str] = mapped_column(String(40), default="from-internet")
     allow_manual_onu_id: Mapped[bool] = mapped_column(Boolean, default=False)
+    service_mode_template_id: Mapped[int | None] = mapped_column(
+        ForeignKey("onu_service_mode_templates.id", ondelete="SET NULL"), nullable=True
+    )
+    service_mode_code: Mapped[str] = mapped_column(String(80), default="bridge_tag_internet")
     technical_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     address: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -623,6 +656,7 @@ class ProvisioningPlan(Base, TimestampMixin):
     speed_profile: Mapped[SpeedProfile | None] = relationship()
     upload_profile: Mapped[ProfileCatalog | None] = relationship(foreign_keys=[upload_profile_id])
     download_profile: Mapped[ProfileCatalog | None] = relationship(foreign_keys=[download_profile_id])
+    service_mode_template: Mapped[OnuServiceModeTemplate | None] = relationship()
     validation_result: Mapped["ProvisioningValidationResult | None"] = relationship(
         back_populates="plan",
         cascade="all, delete-orphan",

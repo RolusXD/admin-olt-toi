@@ -215,6 +215,30 @@ export type ProvisioningTemplate = {
   updated_at: string;
 };
 
+export type OnuServiceModeTemplate = {
+  id: number;
+  olt_id: number;
+  vendor: string;
+  model: string;
+  firmware: string;
+  mode_code: string;
+  name: string;
+  description?: string | null;
+  vlan_mode: string;
+  dhcp_source: string;
+  use_iphost: boolean;
+  use_veip: boolean;
+  use_vlan_filter: boolean;
+  use_loop_detect: boolean;
+  disable_wifi: boolean;
+  default_for_provisioning: boolean;
+  template_body: string;
+  source: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type PonPort = {
   id: number;
   olt_id: number;
@@ -335,6 +359,7 @@ export type Onu = {
   external_id?: string | null;
   description_parse_status?: string | null;
   description_parse_warnings?: string | null;
+  service_mode_code?: string | null;
   import_source?: string | null;
 };
 
@@ -378,6 +403,7 @@ export type UnauthorizedOnu = {
   serial_number: string;
   detected_type?: string | null;
   detected_vendor?: string | null;
+  suggested_service_mode_code?: string | null;
   raw_output?: string | null;
   status: "pending" | "ignored" | "ready_for_provisioning" | "provisioned" | string;
   first_seen_at: string;
@@ -555,6 +581,8 @@ export type ProvisioningPlan = {
   ethernet_port?: string;
   dhcp_mode?: string;
   allow_manual_onu_id?: boolean;
+  service_mode_template_id?: number | null;
+  service_mode_code?: string;
   technical_comment?: string | null;
   address?: string | null;
   notes?: string | null;

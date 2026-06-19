@@ -13,6 +13,7 @@ from app.models.entities import (
     NapPort,
     Olt,
     Onu,
+    OnuServiceModeTemplate,
     OnuType,
     ProfileCatalog,
     ProvisioningPlan,
@@ -121,7 +122,65 @@ def catalog(db_session):
                 max_tcont=8,
                 max_gemport=32,
                 max_ports=2,
+                ethernet_ports=2,
                 is_provisioning_allowed=True,
+            ),
+            OnuServiceModeTemplate(
+                olt_id=olt.id,
+                mode_code="bridge_tag_internet",
+                name="Modo Bridge TAG Internet",
+                vlan_mode="tag",
+                dhcp_source="from-internet",
+                use_veip=True,
+                use_loop_detect=True,
+                template_body=(
+                    "loop-detect ethuni {ethernet_port} enable\n"
+                    "flow mode 1 tag-filter vid-filter untag-filter discard\n"
+                    "flow 1 priority 0 vid {vlan}\n"
+                    "gemport 1 flow 1\n"
+                    "switchport-bind switch_0/1 veip 1\n"
+                    "vlan port {ethernet_port} mode tag vlan {vlan}\n"
+                    "dhcp-ip ethuni {ethernet_port} from-internet"
+                ),
+                source="imported",
+            ),
+            OnuServiceModeTemplate(
+                olt_id=olt.id,
+                mode_code="router_iphost",
+                name="Modo Router IPHost",
+                vlan_mode="unknown",
+                dhcp_source="from-onu",
+                use_iphost=True,
+                use_veip=True,
+                use_vlan_filter=True,
+                template_body=(
+                    "flow 1 priority 0 vid {vlan}\n"
+                    "switchport-bind switch_0/1 iphost 1\n"
+                    "switchport-bind switch_0/1 veip 1\n"
+                    "vlan-filter-mode iphost 1 tag-filter vid-filter untag-filter discard\n"
+                    "vlan-filter iphost 1 priority 0 vid {vlan}\n{dhcp_lines}"
+                ),
+                source="imported",
+            ),
+            OnuServiceModeTemplate(
+                olt_id=olt.id,
+                mode_code="transparent_special",
+                name="Modo Transparent Especial",
+                vlan_mode="transparent",
+                dhcp_source="from-internet",
+                use_iphost=True,
+                use_veip=True,
+                use_vlan_filter=True,
+                disable_wifi=True,
+                template_body=(
+                    "flow 1 priority 0 vid {vlan}\n"
+                    "switchport-bind switch_0/1 iphost 1\n"
+                    "switchport-bind switch_0/1 veip 1\n"
+                    "vlan-filter-mode iphost 1 tag-filter vid-filter untag-filter discard\n"
+                    "vlan-filter iphost 1 priority 0 vid {vlan}\n"
+                    "{ethernet_vlan_lines}\n{dhcp_lines}\nwifi disable"
+                ),
+                source="imported",
             ),
             ProvisioningTemplate(
                 name="ZTE C300 V1.2.5P3 default dry-run",
@@ -192,6 +251,7 @@ def payload(
     onu_name: str = "Cliente_Prueba",
     onu_description: str = "$$$$zone_Zone_1_descr__extid_GPON00CBAC10_authd_20210124",
     customer_name: str = "Cliente Prueba",
+    service_mode_code: str = "bridge_tag_internet",
 ) -> ProvisioningPlanCreate:
     return ProvisioningPlanCreate(
         unauthorized_onu_id=pending_id,
@@ -212,6 +272,7 @@ def payload(
         upload_profile_id=upload_profile_id,
         download_profile_id=download_profile_id,
         selected_onu_id=selected_onu_id,
+        service_mode_code=service_mode_code,
     )
 
 
@@ -466,6 +527,7 @@ def test_create_plan_without_vlan_fails_validation(catalog):
             upload_profile_id=1,
             download_profile_id=2,
             selected_onu_id=1,
+            service_mode_code="bridge_tag_internet",
         )
 
 
@@ -488,6 +550,7 @@ def test_create_plan_without_upload_profile_fails_validation(catalog):
             vlan=600,
             download_profile_id=2,
             selected_onu_id=1,
+            service_mode_code="bridge_tag_internet",
         )
 
 
@@ -505,7 +568,16 @@ def test_create_plan_without_download_profile_fails_validation(catalog):
             vlan=600,
             upload_profile_id=1,
             selected_onu_id=1,
+            service_mode_code="bridge_tag_internet",
         )
+
+
+def test_create_plan_without_service_mode_fails_validation(catalog):
+    data = payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id).model_dump()
+    data.pop("service_mode_code")
+
+    with pytest.raises(ValidationError):
+        ProvisioningPlanCreate(**data)
 
 
 def test_vlan_selector_data_filters_by_olt_and_active(db_session, catalog):
@@ -528,6 +600,7 @@ def test_gpon00cbac10_generates_real_zte_cli_with_vlan_600(db_session, catalog):
             vlan=600,
             customer_name="TR Camacho FO",
             onu_description="$$$$zone_Zone_1_descr__extid_GPON00CBAC10_authd_20210124",
+            service_mode_code="transparent_special",
         )
     )
 
@@ -544,15 +617,16 @@ switchport mode hybrid vport 1
 switchport vlan 600 tag vport 1
 exit
 pon-onu-mng gpon-onu_1/2/15:1
-loop-detect ethuni eth_0/1 enable
-flow mode 1 tag-filter vid-filter untag-filter discard
 flow 1 priority 0 vid 600
-gemport 1 flow 1
+switchport-bind switch_0/1 iphost 1
 switchport-bind switch_0/1 veip 1
-vlan port eth_0/1 mode tag vlan 600
+vlan-filter-mode iphost 1 tag-filter vid-filter untag-filter discard
+vlan-filter iphost 1 priority 0 vid 600
+vlan port eth_0/1 mode transparent
+vlan port eth_0/2 mode transparent
 dhcp-ip ethuni eth_0/1 from-internet
-security-mng 998 state enable mode permit ingress-type lan protocol web https
-security-mng 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069
+dhcp-ip ethuni eth_0/2 from-internet
+wifi disable
 exit"""
 
     assert plan.generated_cli == expected
@@ -561,6 +635,9 @@ exit"""
     assert "SMARTOLT-1G-UP" in plan.generated_cli
     assert "SMARTOLT-1G-DOWN" in plan.generated_cli
     assert "pon-onu-mng gpon-onu_1/2/15:1" in plan.generated_cli
+    assert "vlan-filter iphost 1 priority 0 vid 600" in plan.generated_cli
+    assert "vlan port eth_0/1 mode transparent" in plan.generated_cli
+    assert "vlan port eth_0/2 mode transparent" in plan.generated_cli
 
 
 def test_nap_port_is_optional_and_cli_keeps_management_block(db_session, catalog):

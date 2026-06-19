@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.drivers.errors import DriverCommandError
 from app.drivers.zte.c300_v125p3_telnet.running_config_parser import ParsedOnu, parse_running_config
+from app.drivers.zte.c300_v125p3_telnet.zte_onu_management_mode_parser import SERVICE_MODE_DEFINITIONS
 from app.models.entities import (
     ConfigSnapshot,
     DriverCommandLog,
@@ -17,7 +18,9 @@ from app.models.entities import (
     OltTechnicalSettings,
     OltUplink,
     Onu,
+    OnuServiceModeTemplate,
     OnuType,
+    UnauthorizedOnu,
     PonPort,
     ProfileCatalog,
     SpeedProfile,
@@ -155,12 +158,33 @@ class InitialImportService:
             self._upsert_uplink(olt.id, uplink)
             counters["uplinks_upserted"] += 1
         self._ensure_technical_settings(olt.id)
+        management_modes = {item.onu_interface: item for item in parsed.onu_management_modes}
+        self._sync_onu_service_modes(olt, parsed.onu_management_modes)
+        for parsed_onu in parsed.onus:
+            historical_mode = management_modes.get(parsed_onu.onu_interface)
+            if not historical_mode or historical_mode.mode_code == "unknown":
+                continue
+            pending = self.db.scalar(
+                select(UnauthorizedOnu).where(
+                    UnauthorizedOnu.olt_id == olt.id,
+                    UnauthorizedOnu.serial_number == parsed_onu.serial_number,
+                )
+            )
+            if pending:
+                pending.suggested_service_mode_code = historical_mode.mode_code
         for onu in parsed.onus:
             zone, zone_created = self._ensure_zone(onu.parsed_zone_name)
             nap, nap_created = self._ensure_nap(zone, onu.parsed_nap_name)
             counters["zones_upserted"] += 1 if zone_created else 0
             counters["naps_upserted"] += 1 if nap_created else 0
-            persisted = self._upsert_onu(olt, job, onu, zone.id if zone else None, nap.id if nap else None)
+            persisted = self._upsert_onu(
+                olt,
+                job,
+                onu,
+                zone.id if zone else None,
+                nap.id if nap else None,
+                management_modes.get(onu.onu_interface).mode_code if management_modes.get(onu.onu_interface) else None,
+            )
             if nap and persisted.nap_port:
                 self._occupy_nap_port(nap, persisted)
             counters["onus_upserted"] += 1
@@ -185,6 +209,7 @@ class InitialImportService:
             "pon_ports": base["pon_ports"],
             "uplinks": base.get("uplinks", 0),
             "onus": base["onus"],
+            "onu_management_modes": base.get("onu_management_modes", 0),
             "zones_detected": base["zones_detected"],
             "naps_detected": base["naps_detected"],
             "warnings": base["warnings"],
@@ -363,7 +388,15 @@ class InitialImportService:
         self._ensure_nap_ports(nap)
         return nap, True
 
-    def _upsert_onu(self, olt: Olt, job: ImportJob, parsed: ParsedOnu, zone_id: int | None, nap_id: int | None) -> Onu:
+    def _upsert_onu(
+        self,
+        olt: Olt,
+        job: ImportJob,
+        parsed: ParsedOnu,
+        zone_id: int | None,
+        nap_id: int | None,
+        service_mode_code: str | None = None,
+    ) -> Onu:
         olt_id = olt.id
         onu = self.db.scalar(select(Onu).where(Onu.olt_id == olt_id, Onu.serial_number == parsed.serial_number))
         pon = self.db.scalar(select(PonPort).where(PonPort.olt_id == olt_id, PonPort.interface_name == parsed.pon_interface_name))
@@ -413,9 +446,57 @@ class InitialImportService:
         onu.external_id = parsed.external_id or parsed.serial_number
         onu.description_parse_status = parsed.description_parse_status
         onu.description_parse_warnings = json.dumps(parsed.description_parse_warnings, ensure_ascii=True)
+        onu.service_mode_code = service_mode_code if service_mode_code != "unknown" else onu.service_mode_code
         onu.source = "cli_import"
         onu.import_source = self.IMPORT_SOURCE_BY_JOB_SOURCE.get(job.source, "manual")
         return onu
+
+    def _sync_onu_service_modes(self, olt: Olt, parsed_modes: list) -> None:
+        known_modes = [mode for mode in parsed_modes if mode.mode_code in SERVICE_MODE_DEFINITIONS]
+        counts: dict[str, int] = {}
+        samples: dict[str, object] = {}
+        for mode in known_modes:
+            counts[mode.mode_code] = counts.get(mode.mode_code, 0) + 1
+            samples.setdefault(mode.mode_code, mode)
+
+        manual_default = self.db.scalar(
+            select(OnuServiceModeTemplate).where(
+                OnuServiceModeTemplate.olt_id == olt.id,
+                OnuServiceModeTemplate.source == "manual",
+                OnuServiceModeTemplate.default_for_provisioning.is_(True),
+            )
+        )
+        default_code = max(counts, key=counts.get) if counts and not manual_default else None
+
+        for mode_code, sample in samples.items():
+            definition = SERVICE_MODE_DEFINITIONS[mode_code]
+            item = self.db.scalar(
+                select(OnuServiceModeTemplate).where(
+                    OnuServiceModeTemplate.olt_id == olt.id,
+                    OnuServiceModeTemplate.mode_code == mode_code,
+                )
+            )
+            if item and item.source == "manual":
+                continue
+            if not item:
+                item = OnuServiceModeTemplate(olt_id=olt.id, mode_code=mode_code, name=definition["name"], template_body=definition["template_body"])
+                self.db.add(item)
+            item.vendor = olt.vendor
+            item.model = olt.model
+            item.firmware = olt.firmware or "V1.2.5P3"
+            item.name = definition["name"]
+            item.description = f'{definition["description"]} Detectado en {counts[mode_code]} ONUs.'
+            item.vlan_mode = sample.vlan_mode
+            item.dhcp_source = sample.dhcp_source
+            item.use_iphost = sample.has_iphost
+            item.use_veip = sample.has_veip
+            item.use_vlan_filter = sample.has_vlan_filter
+            item.use_loop_detect = sample.loop_detect_enabled
+            item.disable_wifi = sample.wifi_disabled
+            item.default_for_provisioning = mode_code == default_code
+            item.template_body = definition["template_body"]
+            item.source = "imported"
+            item.is_active = True
 
     def _sync_speed_profiles(self, olt_id: int, parsed_profiles: list | None = None) -> None:
         olt = self.db.get(Olt, olt_id)

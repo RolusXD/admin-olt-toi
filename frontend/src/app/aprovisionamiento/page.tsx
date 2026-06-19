@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Panel } from "@/components/ui/panel";
 import { api } from "@/services/api";
 import { useApiData } from "@/hooks/useApiData";
-import type { Nap, NapPort, Olt, Onu, OnuType, ProfileCatalog, ProvisioningPlan, UnauthorizedOnu, Vlan, Zone } from "@/types";
+import type { Nap, NapPort, Olt, Onu, OnuServiceModeTemplate, OnuType, ProfileCatalog, ProvisioningPlan, UnauthorizedOnu, Vlan, Zone } from "@/types";
 
 export default function ProvisioningPage() {
   const [showLab, setShowLab] = useState(false);
@@ -20,6 +20,7 @@ export default function ProvisioningPage() {
   const [selectedNapId, setSelectedNapId] = useState<string>("");
   const [overrideOnuId, setOverrideOnuId] = useState(false);
   const [suggestedOnuId, setSuggestedOnuId] = useState<string>("");
+  const [selectedServiceModeCode, setSelectedServiceModeCode] = useState<string>("");
   const [plan, setPlan] = useState<ProvisioningPlan | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +48,11 @@ export default function ProvisioningPage() {
   );
   const napPorts = useApiData<NapPort[]>(() => api.napPorts(), []);
   const onus = useApiData<Onu[]>(() => api.onus({ environment }), [], [environment]);
+  const serviceModes = useApiData<OnuServiceModeTemplate[]>(
+    () => api.onuServiceModes(selectedOltId ? { olt_id: selectedOltId, is_active: true } : { is_active: true }),
+    [],
+    [selectedOltId],
+  );
 
   const selectedPending = useMemo(
     () => pending.data.find((onu) => String(onu.id) === selectedUnauthorizedId) ?? null,
@@ -77,6 +83,15 @@ export default function ProvisioningPage() {
     () => downloadProfiles.data.find((profile) => profile.is_default && String(profile.olt_id) === selectedOltId) ?? downloadProfiles.data.find((profile) => profile.name === "SMARTOLT-1G-DOWN" && String(profile.olt_id) === selectedOltId),
     [downloadProfiles.data, selectedOltId],
   );
+  const historicalServiceMode = useMemo(
+    () => selectedPending?.suggested_service_mode_code
+      ?? onus.data.find((onu) => onu.olt_id === selectedPending?.olt_id && onu.serial_number === selectedPending?.serial_number)?.service_mode_code,
+    [onus.data, selectedPending],
+  );
+  const selectedServiceMode = useMemo(
+    () => serviceModes.data.find((mode) => mode.mode_code === selectedServiceModeCode) ?? null,
+    [serviceModes.data, selectedServiceModeCode],
+  );
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -98,11 +113,20 @@ export default function ProvisioningPage() {
     if (selectedNap) setSelectedZoneId(String(selectedNap.zone_id));
   }, [selectedNap]);
 
+  useEffect(() => {
+    if (selectedServiceModeCode || !serviceModes.data.length) return;
+    const preferred = serviceModes.data.find((mode) => mode.mode_code === historicalServiceMode)
+      ?? serviceModes.data.find((mode) => mode.default_for_provisioning)
+      ?? serviceModes.data[0];
+    setSelectedServiceModeCode(preferred?.mode_code ?? "");
+  }, [historicalServiceMode, selectedServiceModeCode, serviceModes.data]);
+
   function selectPending(id: string) {
     const item = pending.data.find((onu) => String(onu.id) === id);
     setSelectedUnauthorizedId(id);
     if (item) setSelectedOltId(String(item.olt_id));
     setSuggestedOnuId(item ? extractSuggestedOnuId(item) || "1" : "");
+    setSelectedServiceModeCode("");
     setPlan(null);
     setMessage(null);
     setError(null);
@@ -138,10 +162,11 @@ export default function ProvisioningPage() {
       speed_profile_down: selectedDownloadProfile?.name ?? "",
       selected_onu_id: form.get("selected_onu_id") ? Number(form.get("selected_onu_id")) : undefined,
       allow_manual_onu_id: overrideOnuId,
-      onu_mode: String(form.get("onu_mode") ?? "router"),
-      vlan_lan_mode: String(form.get("vlan_lan_mode") ?? "tag"),
+      onu_mode: selectedServiceModeCode,
+      vlan_lan_mode: selectedServiceMode?.vlan_mode ?? "tag",
       ethernet_port: String(form.get("ethernet_port") ?? "eth_0/1"),
-      dhcp_mode: String(form.get("dhcp_mode") ?? "from-internet"),
+      dhcp_mode: selectedServiceMode?.dhcp_source ?? "from-internet",
+      service_mode_code: selectedServiceModeCode,
     };
     try {
       const created = await api.createProvisioningPlan(payload);
@@ -245,7 +270,10 @@ export default function ProvisioningPage() {
               <select
                 className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
                 value={selectedOltId}
-                onChange={(event) => setSelectedOltId(event.target.value)}
+                onChange={(event) => {
+                  setSelectedOltId(event.target.value);
+                  setSelectedServiceModeCode("");
+                }}
               >
                 <option value="">Todas las OLTs visibles</option>
                 {olts.data.map((olt) => (
@@ -387,11 +415,21 @@ export default function ProvisioningPage() {
 
           <Panel className="p-4">
             <h3 className="mb-4 text-sm font-semibold text-slate-950">Paso 5: Comportamiento ONU / Puertos</h3>
-            <div className="grid gap-3 md:grid-cols-4">
-              <Select name="onu_mode" label="Modo ONU" defaultValue="router" items={[{ value: "router", label: "Router" }, { value: "bridge", label: "Bridge" }]} />
-              <Select name="vlan_lan_mode" label="Modo VLAN LAN" defaultValue="tag" items={[{ value: "tag", label: "tag" }, { value: "untag", label: "untag" }, { value: "transparent", label: "transparent" }]} />
+            <div className="grid gap-3 md:grid-cols-3">
+              <Select
+                name="service_mode_code"
+                label="Modo de servicio ONU"
+                value={selectedServiceModeCode}
+                onChange={setSelectedServiceModeCode}
+                items={serviceModes.data.map((mode) => ({ value: mode.mode_code, label: mode.name }))}
+              />
               <Select name="ethernet_port" label="Puerto Ethernet principal" defaultValue="eth_0/1" items={[{ value: "eth_0/1", label: "eth_0/1" }, { value: "eth_0/2", label: "eth_0/2" }]} />
-              <Select name="dhcp_mode" label="DHCP" defaultValue="from-internet" items={[{ value: "from-internet", label: "from-internet" }, { value: "from-onu", label: "from-onu" }, { value: "none", label: "none" }]} />
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <div className="font-medium text-slate-950">Reglas del modo</div>
+                <div className="mt-1">VLAN: {selectedServiceMode?.vlan_mode ?? "-"}</div>
+                <div>DHCP: {selectedServiceMode?.dhcp_source ?? "-"}</div>
+                <div>{selectedServiceMode?.description ?? "Seleccione un modo importado de la OLT."}</div>
+              </div>
             </div>
           </Panel>
 
@@ -501,6 +539,7 @@ function PlanPreview({ plan }: { plan: ProvisioningPlan }) {
         <Info label="Description generado" value={plan.description_generated ?? plan.onu_description ?? "-"} />
         <Info label="NAP puerto" value={plan.nap_port ?? "Opcional"} />
         <Info label="VLAN" value={plan.vlan} />
+        <Info label="Modo ONU" value={plan.service_mode_code ?? "-"} />
         <Info label="Perfiles" value={`${plan.speed_profile_up} / ${plan.speed_profile_down}`} />
         <Info label="ONU ID seleccionado" value={plan.selected_onu_id ?? "-"} />
         <Info label="ONU ID sugerido" value={plan.suggested_onu_id ?? "-"} />

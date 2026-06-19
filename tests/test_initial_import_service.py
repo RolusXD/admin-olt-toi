@@ -18,6 +18,7 @@ from app.models.entities import (
     OltTechnicalSettings,
     OltUplink,
     Onu,
+    OnuServiceModeTemplate,
     OnuType,
     PonPort,
     ProfileCatalog,
@@ -126,6 +127,7 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert scalar_count(db_session, ProfileCatalog) == 28
     assert scalar_count(db_session, SpeedProfile) > 0
     assert scalar_count(db_session, OltTechnicalSettings) == 1
+    assert scalar_count(db_session, OnuServiceModeTemplate) == 3
 
     vlan_200 = db_session.scalar(select(Vlan).where(Vlan.olt_id == olt.id, Vlan.vlan_id == 200))
     assert vlan_200 is not None
@@ -197,10 +199,13 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert onu.odb_name == "ODN_C01"
     assert onu.external_id == "BTPTDD2459E4"
     assert onu.description_parse_status == "parsed"
+    assert onu.service_mode_code == "bridge_tag_internet"
     assert onu.imported_from_config is True
     assert onu.source == "cli_import"
     assert onu.import_source == "text_input"
     assert onu.olt_code_snapshot == "OLT-TEST-01"
+    special_onu = db_session.scalar(select(Onu).where(Onu.olt_id == olt.id, Onu.serial_number == "GPON00CBAC10"))
+    assert special_onu.service_mode_code == "transparent_special"
     occupied_port = db_session.scalar(select(NapPort).where(NapPort.nap_id == nap.id, NapPort.port_number == 2))
     assert occupied_port.status == "occupied"
     assert occupied_port.onu_id == onu.id

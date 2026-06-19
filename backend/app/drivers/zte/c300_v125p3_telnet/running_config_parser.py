@@ -3,6 +3,10 @@ from datetime import UTC, datetime
 import re
 
 from app.drivers.zte.c300_v125p3_telnet.zte_onu_description_parser import parse_onu_description
+from app.drivers.zte.c300_v125p3_telnet.zte_onu_management_mode_parser import (
+    ParsedOnuManagementMode,
+    parse_onu_management_modes,
+)
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,7 @@ class RunningConfigParseResult:
     pon_ports: list[ParsedPonPort]
     uplinks: list[ParsedOltUplink]
     onus: list[ParsedOnu]
+    onu_management_modes: list[ParsedOnuManagementMode]
     warnings: list[str]
 
     def summary(self) -> dict:
@@ -143,6 +148,7 @@ class RunningConfigParseResult:
             "pon_ports": len(self.pon_ports),
             "uplinks": len(self.uplinks),
             "onus": len(self.onus),
+            "onu_management_modes": len(self.onu_management_modes),
             "zones_detected": zones,
             "naps_detected": naps,
             "warnings": self.warnings,
@@ -158,7 +164,8 @@ def parse_running_config(raw_config: str) -> RunningConfigParseResult:
     pon_ports = _parse_pon_ports(lines)
     uplinks = _parse_uplinks(lines)
     onus, warnings = _parse_onus(lines)
-    return RunningConfigParseResult(vlans, profiles, profile_catalogs, onu_types, pon_ports, uplinks, onus, warnings)
+    onu_management_modes = parse_onu_management_modes(raw_config)
+    return RunningConfigParseResult(vlans, profiles, profile_catalogs, onu_types, pon_ports, uplinks, onus, onu_management_modes, warnings)
 
 
 def _parse_vlans(lines: list[str]) -> list[ParsedVlan]:

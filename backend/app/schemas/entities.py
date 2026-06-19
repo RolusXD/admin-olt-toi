@@ -533,6 +533,49 @@ class ProvisioningTemplateRead(ProvisioningTemplateCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class OnuServiceModeTemplateCreate(BaseModel):
+    olt_id: int
+    vendor: str = "ZTE"
+    model: str = "C300"
+    firmware: str = "V1.2.5P3"
+    mode_code: str
+    name: str
+    description: str | None = None
+    vlan_mode: str
+    dhcp_source: str
+    use_iphost: bool = False
+    use_veip: bool = True
+    use_vlan_filter: bool = False
+    use_loop_detect: bool = False
+    disable_wifi: bool = False
+    default_for_provisioning: bool = False
+    template_body: str
+    source: str = "manual"
+    is_active: bool = True
+
+
+class OnuServiceModeTemplateUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    vlan_mode: str | None = None
+    dhcp_source: str | None = None
+    use_iphost: bool | None = None
+    use_veip: bool | None = None
+    use_vlan_filter: bool | None = None
+    use_loop_detect: bool | None = None
+    disable_wifi: bool | None = None
+    default_for_provisioning: bool | None = None
+    template_body: str | None = None
+    is_active: bool | None = None
+
+
+class OnuServiceModeTemplateRead(OnuServiceModeTemplateCreate):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
 class OnuSchema(BaseModel):
     olt_id: int
     olt_code_snapshot: str | None = None
@@ -574,6 +617,7 @@ class OnuSchema(BaseModel):
     external_id: str | None = None
     description_parse_status: str | None = None
     description_parse_warnings: list[str] | str | None = None
+    service_mode_code: str | None = None
     source: str = "manual"
     import_source: str = "manual"
 
@@ -739,6 +783,7 @@ class UnauthorizedOnuRead(BaseModel):
     serial_number: str
     detected_type: str | None = None
     detected_vendor: str | None = None
+    suggested_service_mode_code: str | None = None
     raw_output: str | None = None
     status: str
     first_seen_at: datetime
@@ -806,6 +851,7 @@ class ProvisioningPlanCreate(BaseModel):
     vlan_lan_mode: str = "tag"
     ethernet_port: str = "eth_0/1"
     dhcp_mode: str = "from-internet"
+    service_mode_code: str
 
     @field_validator("customer_name", "onu_type")
     @classmethod
@@ -842,6 +888,8 @@ class ProvisioningPlanRead(BaseModel):
     ethernet_port: str = "eth_0/1"
     dhcp_mode: str = "from-internet"
     allow_manual_onu_id: bool = False
+    service_mode_template_id: int | None = None
+    service_mode_code: str = "bridge_tag_internet"
     technical_comment: str | None = None
     address: str | None = None
     notes: str | None = None

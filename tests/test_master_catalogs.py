@@ -14,6 +14,7 @@ from app.models.entities import (
     NapPort,
     Olt,
     Onu,
+    OnuServiceModeTemplate,
     OnuType,
     ProfileCatalog,
     ProvisioningTemplate,
@@ -92,6 +93,16 @@ def catalog(db_session):
                 template_body="onu {onu_index} type {onu_type} sn {serial_number}",
                 commands="onu {onu_index} type {onu_type} sn {serial_number}",
                 is_default=True,
+                is_active=True,
+            ),
+            OnuServiceModeTemplate(
+                olt_id=olt.id,
+                mode_code="bridge_tag_internet",
+                name="Modo Bridge TAG Internet",
+                vlan_mode="tag",
+                dhcp_source="from-internet",
+                use_veip=True,
+                template_body="vlan port {ethernet_port} mode tag vlan {vlan}",
                 is_active=True,
             ),
             UnauthorizedOnu(
@@ -273,6 +284,7 @@ def test_provisioning_uses_speed_profile_and_blocks_occupied_nap_port(db_session
             upload_profile_id=speed.upload_profile_id,
             download_profile_id=speed.download_profile_id,
             selected_onu_id=1,
+            service_mode_code="bridge_tag_internet",
         )
     )
     _, result = ProvisioningService(db_session).validate_and_update(plan.id)

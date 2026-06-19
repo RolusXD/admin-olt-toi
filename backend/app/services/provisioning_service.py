@@ -22,6 +22,7 @@ from app.models.entities import (
     Olt,
     OltCard,
     Onu,
+    OnuServiceModeTemplate,
     OnuType,
     PonPort,
     ProfileCatalog,
@@ -135,6 +136,13 @@ class ProvisioningService:
             download_profile.name if download_profile else speed_profile.downstream_profile_name if speed_profile else payload.speed_profile_down
         )
         onu_type = self._resolve_onu_type_value(payload.onu_type, olt.id, olt)
+        service_mode = self.db.scalar(
+            select(OnuServiceModeTemplate).where(
+                OnuServiceModeTemplate.olt_id == olt.id,
+                OnuServiceModeTemplate.mode_code == payload.service_mode_code,
+                OnuServiceModeTemplate.is_active.is_(True),
+            )
+        )
         occupied_onu_ids = self.occupied_onu_ids(olt.id, unauthorized.pon_port_interface)
         suggested_onu_id = self.next_available_onu_id(occupied_onu_ids)
         selected_onu_id = payload.selected_onu_id or suggested_onu_id
@@ -176,6 +184,8 @@ class ProvisioningService:
             ethernet_port=payload.ethernet_port,
             dhcp_mode=payload.dhcp_mode,
             allow_manual_onu_id=payload.allow_manual_onu_id,
+            service_mode_template_id=service_mode.id if service_mode else None,
+            service_mode_code=payload.service_mode_code,
             technical_comment=payload.technical_comment,
             address=payload.address,
             notes=payload.notes,
@@ -268,6 +278,7 @@ class ProvisioningService:
         zone = self.db.get(Zone, plan.zone_id)
         nap = self.db.get(Nap, plan.nap_id)
         template = self._default_template_object(olt)
+        service_mode = self._resolve_service_mode(plan)
         occupied_onu_ids = self.occupied_onu_ids(plan.olt_id, plan.pon_port_interface)
         suggested_onu_id = self.next_available_onu_id(occupied_onu_ids)
         plan.suggested_onu_id = suggested_onu_id
@@ -405,6 +416,12 @@ class ProvisioningService:
 
         if not template:
             errors.append("No existe ProvisioningTemplate activo compatible con vendor/model/firmware de la OLT.")
+        if not service_mode:
+            errors.append(f"El modo ONU {plan.service_mode_code or '-'} no existe o no esta activo para esta OLT.")
+        else:
+            plan.service_mode_template_id = service_mode.id
+            plan.vlan_lan_mode = service_mode.vlan_mode
+            plan.dhcp_mode = service_mode.dhcp_source
 
         description = plan.description_generated or plan.onu_description
         parsed_description = parse_onu_description(description)
@@ -418,6 +435,15 @@ class ProvisioningService:
         plan.description_parse_warnings = json.dumps(parsed_description.warnings, ensure_ascii=True)
 
         cli_preview = self.generate_cli(plan, unauthorized=unauthorized, onu_id=selected_onu_id, template=template)
+        if service_mode:
+            if service_mode.use_iphost and "switchport-bind switch_0/1 iphost 1" not in cli_preview:
+                errors.append("El modo seleccionado requiere IPHost y el CLI no lo genero.")
+            if service_mode.use_vlan_filter and f"vlan-filter iphost 1 priority 0 vid {plan.vlan}" not in cli_preview:
+                errors.append("El modo seleccionado requiere vlan-filter con la VLAN seleccionada.")
+            if service_mode.vlan_mode == "transparent" and "mode transparent" not in cli_preview:
+                errors.append("El modo seleccionado requiere puertos Ethernet transparent.")
+            if service_mode.vlan_mode == "tag" and f"mode tag vlan {plan.vlan}" not in cli_preview:
+                errors.append("El modo seleccionado requiere TAG con la VLAN seleccionada.")
         return ValidationResult(
             is_valid=not errors,
             warnings=warnings,
@@ -480,7 +506,41 @@ class ProvisioningService:
             "ethernet_port": plan.ethernet_port,
             "dhcp_mode": plan.dhcp_mode,
         }
-        return template_body.format(**context)
+        base_cli = template_body.format(**context)
+        service_mode = self._resolve_service_mode(plan)
+        if not service_mode:
+            return base_cli
+        base_cli = re.split(r"\npon-onu-mng\s+", base_cli, maxsplit=1, flags=re.IGNORECASE)[0].rstrip()
+        ports = self._management_ethernet_ports(plan, olt)
+        mode_context = {
+            **context,
+            "ethernet_vlan_lines": "\n".join(f"vlan port {port} mode {service_mode.vlan_mode}" for port in ports),
+            "dhcp_lines": "\n".join(f"dhcp-ip ethuni {port} {service_mode.dhcp_source}" for port in ports),
+        }
+        management_block = service_mode.template_body.format(**mode_context).strip()
+        return f"{base_cli}\npon-onu-mng {onu_interface}\n{management_block}\nexit"
+
+    def _resolve_service_mode(self, plan: ProvisioningPlan) -> OnuServiceModeTemplate | None:
+        if plan.service_mode_template_id:
+            item = self.db.get(OnuServiceModeTemplate, plan.service_mode_template_id)
+            if item and item.olt_id == plan.olt_id and item.is_active:
+                return item
+        if not plan.service_mode_code:
+            return None
+        return self.db.scalar(
+            select(OnuServiceModeTemplate).where(
+                OnuServiceModeTemplate.olt_id == plan.olt_id,
+                OnuServiceModeTemplate.mode_code == plan.service_mode_code,
+                OnuServiceModeTemplate.is_active.is_(True),
+            )
+        )
+
+    def _management_ethernet_ports(self, plan: ProvisioningPlan, olt: Olt | None) -> list[str]:
+        onu_type = self._resolve_onu_type(plan, olt)
+        count = max(1, onu_type.ethernet_ports or 1) if onu_type else 1
+        if plan.service_mode_code == "transparent_special" or plan.service_mode_code == "router_iphost":
+            return [f"eth_0/{index}" for index in range(1, count + 1)]
+        return [plan.ethernet_port or "eth_0/1"]
 
     def _default_template(self, olt: Olt | None) -> str:
         template = self._default_template_object(olt)
@@ -673,6 +733,8 @@ def plan_to_dict(plan: ProvisioningPlan) -> dict:
         "ethernet_port": plan.ethernet_port,
         "dhcp_mode": plan.dhcp_mode,
         "allow_manual_onu_id": plan.allow_manual_onu_id,
+        "service_mode_template_id": plan.service_mode_template_id,
+        "service_mode_code": plan.service_mode_code,
         "technical_comment": plan.technical_comment,
         "address": plan.address,
         "notes": plan.notes,

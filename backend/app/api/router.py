@@ -10,6 +10,7 @@ from app.api.routes import (
     naps,
     olts,
     onus,
+    onu_service_modes,
     onu_types,
     pon_ports,
     profile_catalogs,
@@ -31,6 +32,7 @@ api_router.include_router(zones.router)
 api_router.include_router(naps.router)
 api_router.include_router(nap_ports.router)
 api_router.include_router(onus.router)
+api_router.include_router(onu_service_modes.router)
 api_router.include_router(onu_types.router)
 api_router.include_router(vlans.router)
 api_router.include_router(pon_ports.router)

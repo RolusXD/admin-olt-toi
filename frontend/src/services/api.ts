@@ -22,6 +22,7 @@ import type {
   PowerSample,
   ProfileCatalog,
   ProvisioningPlan,
+  OnuServiceModeTemplate,
   ProvisioningPlanValidation,
   ProvisioningPreflightResult,
   ProvisioningTemplate,
@@ -103,6 +104,8 @@ export const api = {
     request<ProfileCatalog[]>(`/profile-catalogs${toQuery(params)}`),
   provisioningTemplates: (params: Record<string, string | number | undefined | null> = {}) =>
     request<ProvisioningTemplate[]>(`/provisioning-templates${toQuery(params)}`),
+  onuServiceModes: (params: Record<string, string | number | boolean | undefined | null> = {}) =>
+    request<OnuServiceModeTemplate[]>(`/onu-service-modes${toQuery(params)}`),
   ponPorts: (params: { olt_id?: number | string; olt_code?: string } = {}) => request<PonPort[]>(`/pon-ports${toQuery(params)}`),
   onus: (params: Record<string, string | number | undefined | null> = {}) => request<Onu[]>(`/onus${toQuery(params)}`),
   onu: (id: number | string) => request<Onu>(`/onus/${id}`),
