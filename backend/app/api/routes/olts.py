@@ -84,20 +84,58 @@ def olt_pon_ports(olt_id: int, db: DbSession) -> list[dict]:
     ports = list(db.scalars(select(PonPort).where(PonPort.olt_id == olt_id).order_by(PonPort.slot, PonPort.port)))
     rows = []
     for port in ports:
-        total = db.scalar(select(func.count()).select_from(Onu).where(Onu.pon_port_id == port.id)) or 0
-        online = db.scalar(select(func.count()).select_from(Onu).where(Onu.pon_port_id == port.id, Onu.status.in_(["online", "working"]))) or 0
+        imported_total = db.scalar(select(func.count()).select_from(Onu).where(Onu.pon_port_id == port.id)) or 0
+        imported_online = db.scalar(select(func.count()).select_from(Onu).where(Onu.pon_port_id == port.id, Onu.status.in_(["online", "working"]))) or 0
+        total = port.total_count or imported_total
+        online = port.online_count or imported_online
         avg_rx = db.scalar(select(func.avg(Onu.rx_power)).where(Onu.pon_port_id == port.id, Onu.rx_power.is_not(None)))
         data = PonPortTechnicalRead.model_validate(port).model_dump()
         data.update(
             {
                 "online_onus": online,
                 "total_onus": total,
-                "load_percent": round((total / 128) * 100, 2) if total else 0,
+                "load_percent": port.occupancy_percent or (round((total / 128) * 100, 2) if total else 0),
                 "avg_rx_power": round(float(avg_rx), 2) if avg_rx is not None else None,
             }
         )
         rows.append(data)
     return rows
+
+
+@router.post("/{olt_id}/sync-cards")
+def sync_cards(olt_id: int, db: DbSession) -> dict:
+    olt = get_olt_or_404(db, olt_id)
+    try:
+        return OltCliService(db).sync_cards(olt)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/{olt_id}/sync-pon-status")
+def sync_pon_status(olt_id: int, db: DbSession) -> dict:
+    olt = get_olt_or_404(db, olt_id)
+    try:
+        return OltCliService(db).sync_pon_status(olt)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/{olt_id}/discover-uplinks")
+def discover_uplinks(olt_id: int, db: DbSession) -> dict:
+    olt = get_olt_or_404(db, olt_id)
+    try:
+        return OltCliService(db).discover_uplinks(olt)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/{olt_id}/sync-uplinks")
+def sync_uplinks(olt_id: int, db: DbSession) -> dict:
+    olt = get_olt_or_404(db, olt_id)
+    try:
+        return OltCliService(db).sync_uplinks(olt)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/{olt_id}/vlans", response_model=list[VlanTechnicalRead])

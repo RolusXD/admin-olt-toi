@@ -51,6 +51,8 @@ def create_onu_type(payload: OnuTypeCreate, db: DbSession) -> OnuType:
     existing = db.scalar(select(OnuType).where(OnuType.olt_id == payload.olt_id, OnuType.name == payload.name))
     if existing:
         raise HTTPException(status_code=409, detail="ONU type already exists for this OLT")
+    if payload.is_default_for_provisioning and payload.is_active:
+        _clear_default(db, payload.olt_id)
     onu_type = OnuType(**payload.model_dump(), olt_code_snapshot=olt.olt_code)
     db.add(onu_type)
     db.commit()
@@ -73,6 +75,8 @@ def update_onu_type(onu_type_id: int, payload: OnuTypeUpdate, db: DbSession) -> 
         raise HTTPException(status_code=404, detail="ONU type not found")
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(onu_type, key, value)
+    if onu_type.is_default_for_provisioning and onu_type.is_active:
+        _clear_default(db, onu_type.olt_id, exclude_id=onu_type.id)
     db.commit()
     db.refresh(onu_type)
     return onu_type
@@ -93,6 +97,16 @@ def _set_active(onu_type_id: int, active: bool, db: DbSession) -> OnuType:
     if not onu_type:
         raise HTTPException(status_code=404, detail="ONU type not found")
     onu_type.is_active = active
+    if not active:
+        onu_type.is_default_for_provisioning = False
     db.commit()
     db.refresh(onu_type)
     return onu_type
+
+
+def _clear_default(db: DbSession, olt_id: int, exclude_id: int | None = None) -> None:
+    statement = select(OnuType).where(OnuType.olt_id == olt_id, OnuType.is_default_for_provisioning.is_(True))
+    if exclude_id is not None:
+        statement = statement.where(OnuType.id != exclude_id)
+    for item in db.scalars(statement):
+        item.is_default_for_provisioning = False

@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from datetime import UTC, datetime
 import json
+import re
 from time import perf_counter
 
 from sqlalchemy import or_, select
@@ -8,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.drivers.errors import DriverCommandError
 from app.drivers.transports import TelnetlibTransport
-from app.models.entities import DriverCommandLog, MonitoringExecution, Olt, Onu, OnuEventHistory, OnuPowerHistory
+from app.drivers.zte.c300_v125p3_telnet.zte_c300_interface_parser import parse_show_interface
+from app.models.entities import DriverCommandLog, MonitoringExecution, Olt, OltCard, OltUplink, Onu, OnuEventHistory, OnuPowerHistory, PonPort
 from app.services.event_service import EventService
 from app.services.olt_service import OltService
 
@@ -168,6 +170,260 @@ class OltCliService:
             "bytes_received": bytes_received,
             "timeout": timeout,
         }
+
+    def sync_cards(self, olt: Olt) -> dict:
+        driver = self.olt_service.driver_for(olt)
+        started = perf_counter()
+        synced_at = datetime.now(UTC)
+        try:
+            driver.connect(disable_paging=False)
+            cards = self._call_read_only(olt.id, "show card", driver.show_card)
+            for card in cards:
+                existing = self.db.scalar(select(OltCard).where(OltCard.olt_id == olt.id, OltCard.slot_number == card.slot))
+                if not existing:
+                    existing = OltCard(olt_id=olt.id, slot_number=card.slot)
+                    self.db.add(existing)
+                existing.card_type = card.card_type
+                existing.real_type = card.real_type or card.card_type
+                existing.firmware = card.firmware
+                existing.role = card.role
+                existing.status = card.status
+                existing.port_count = card.ports
+                existing.last_seen_at = synced_at
+                existing.last_sync_at = synced_at
+                existing.sync_source = "Telnet Read-Only"
+            self._record_monitoring_execution(
+                olt.id,
+                "sync_cards",
+                synced_at,
+                datetime.now(UTC),
+                len(cards),
+                len(cards),
+                0,
+                {"cards": [asdict(card) for card in cards]},
+            )
+            self.db.commit()
+            return {
+                "olt_id": olt.id,
+                "detected": len(cards),
+                "updated": len(cards),
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "source": "Telnet Read-Only",
+                "cards": [asdict(card) for card in cards],
+            }
+        except Exception as exc:
+            self._record_monitoring_execution(
+                olt.id,
+                "sync_cards",
+                synced_at,
+                datetime.now(UTC),
+                0,
+                0,
+                1,
+                {"error": str(exc)},
+            )
+            self.db.commit()
+            raise
+        finally:
+            driver.disconnect()
+
+    def sync_pon_status(self, olt: Olt) -> dict:
+        driver = self.olt_service.driver_for(olt)
+        started = perf_counter()
+        synced_at = datetime.now(UTC)
+        try:
+            driver.connect(disable_paging=False)
+            states = self._call_read_only(olt.id, "show gpon onu state", driver.show_onu_state)
+            by_port: dict[str, dict] = {}
+            for state in states:
+                port_name = self._pon_from_onu_interface(state.interface)
+                bucket = by_port.setdefault(port_name, {"online_count": 0, "offline_count": 0, "total_count": 0})
+                bucket["total_count"] += 1
+                if state.status in {"online", "working"}:
+                    bucket["online_count"] += 1
+                else:
+                    bucket["offline_count"] += 1
+            physical_ports = self._physical_pon_interfaces_from_cards(olt.id)
+            all_port_names = sorted(set(physical_ports) | set(by_port), key=self._pon_sort_key)
+            for interface_name in all_port_names:
+                counts = by_port.get(interface_name, {"online_count": 0, "offline_count": 0, "total_count": 0})
+                pon = self.db.scalar(select(PonPort).where(PonPort.olt_id == olt.id, PonPort.interface_name == interface_name))
+                if not pon:
+                    parsed = self._parse_pon_interface(interface_name)
+                    pon = PonPort(olt_id=olt.id, interface_name=interface_name, rack=parsed[0], shelf=parsed[1], slot=parsed[1], port=parsed[2])
+                    self.db.add(pon)
+                pon.online_count = counts["online_count"]
+                pon.offline_count = counts["offline_count"]
+                pon.total_count = counts["total_count"]
+                pon.occupancy_percent = round((counts["total_count"] / 128) * 100, 2)
+                pon.oper_status = "online" if counts["online_count"] > 0 else ("empty" if counts["total_count"] == 0 else "offline")
+                pon.admin_status = "unknown"
+                pon.last_sync_at = synced_at
+                pon.sync_source = "Telnet Read-Only"
+            self._record_monitoring_execution(
+                olt.id,
+                "sync_pon_status",
+                synced_at,
+                datetime.now(UTC),
+                len(states),
+                len(states),
+                0,
+                {"ports": {name: by_port.get(name, {"online_count": 0, "offline_count": 0, "total_count": 0}) for name in all_port_names}, "total_onus": len(states)},
+            )
+            self.db.commit()
+            return {
+                "olt_id": olt.id,
+                "pon_ports_detected": len(all_port_names),
+                "total_onus": len(states),
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "ports": {name: by_port.get(name, {"online_count": 0, "offline_count": 0, "total_count": 0}) for name in all_port_names},
+            }
+        except Exception as exc:
+            self._record_monitoring_execution(
+                olt.id,
+                "sync_pon_status",
+                synced_at,
+                datetime.now(UTC),
+                0,
+                0,
+                1,
+                {"error": str(exc)},
+            )
+            self.db.commit()
+            raise
+        finally:
+            driver.disconnect()
+
+    def discover_uplinks(self, olt: Olt) -> dict:
+        driver = self.olt_service.driver_for(olt)
+        started = perf_counter()
+        candidates = [
+            "show interface brief",
+            "show interface xgei",
+            "show interface gei",
+            "show interface",
+            "show vlan brief",
+        ]
+        results = []
+        try:
+            driver.connect(disable_paging=False)
+            for command in candidates:
+                command_started = perf_counter()
+                try:
+                    output = driver.execute(command, read_only=True)
+                    duration_ms = int((perf_counter() - command_started) * 1000)
+                    self._log_command(olt.id, command, True, output, duration_ms=duration_ms, read_only=True)
+                    results.append(
+                        {
+                            "command": command,
+                            "success": True,
+                            "duration_ms": duration_ms,
+                            "output_excerpt": output[:3000],
+                            "looks_useful": self._looks_like_uplink_output(output),
+                        }
+                    )
+                except Exception as exc:
+                    duration_ms = int((perf_counter() - command_started) * 1000)
+                    output = getattr(exc, "output", "")
+                    message = getattr(exc, "message", str(exc))
+                    self._log_command(olt.id, command, False, output, error=message, duration_ms=duration_ms, read_only=True)
+                    results.append(
+                        {
+                            "command": command,
+                            "success": False,
+                            "duration_ms": duration_ms,
+                            "error": message,
+                            "output_excerpt": (output or "")[:3000],
+                            "looks_useful": False,
+                        }
+                    )
+            self.db.commit()
+            successful = [item for item in results if item["success"]]
+            useful = [item for item in successful if item["looks_useful"]]
+            return {
+                "olt_id": olt.id,
+                "commands_tested": len(results),
+                "successful": len(successful),
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "best_command": useful[0]["command"] if useful else (successful[0]["command"] if successful else None),
+                "results": results,
+            }
+        finally:
+            driver.disconnect()
+
+    def sync_uplinks(self, olt: Olt) -> dict:
+        driver = self.olt_service.driver_for(olt)
+        started_at = datetime.now(UTC)
+        started = perf_counter()
+        command = "show interface"
+        try:
+            driver.connect(disable_paging=False)
+            output = self._call_read_only(olt.id, command, lambda: driver.execute(command, read_only=True))
+            interfaces = parse_show_interface(output)
+            uplinks = [interface for interface in interfaces if interface.is_uplink_candidate or interface.interface_type == "management"]
+            synced_at = datetime.now(UTC)
+
+            for interface in uplinks:
+                existing = self.db.scalar(
+                    select(OltUplink).where(
+                        OltUplink.olt_id == olt.id,
+                        OltUplink.interface_name == interface.interface_name,
+                    )
+                )
+                if not existing:
+                    existing = OltUplink(olt_id=olt.id, interface_name=interface.interface_name)
+                    self.db.add(existing)
+                existing.description = interface.description
+                existing.interface_type = interface.interface_type
+                existing.admin_status = interface.admin_status
+                existing.oper_status = interface.oper_status
+                existing.line_protocol = interface.line_protocol
+                existing.negotiation = interface.negotiation
+                existing.speed_kbps = interface.speed_kbps
+                existing.mtu = interface.mtu
+                existing.mode = interface.mode
+                existing.pvid_untag = interface.pvid_untag
+                existing.allowed_vlans = interface.allowed_vlans
+                existing.raw_output = interface.raw_output
+                existing.last_seen_at = synced_at
+                existing.sync_source = "Telnet Read-Only"
+
+            finished_at = datetime.now(UTC)
+            result = {
+                "olt_id": olt.id,
+                "uplinks_detected": len(uplinks),
+                "interfaces_parsed": len(interfaces),
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "best_command": command,
+            }
+            self._record_monitoring_execution(
+                olt.id,
+                "sync_uplinks",
+                started_at,
+                finished_at,
+                len(interfaces),
+                len(uplinks),
+                0,
+                result,
+            )
+            self.db.commit()
+            return result
+        except Exception as exc:
+            finished_at = datetime.now(UTC)
+            self._record_monitoring_execution(
+                olt.id,
+                "sync_uplinks",
+                started_at,
+                finished_at,
+                0,
+                0,
+                1,
+                {"error": str(exc), "best_command": command},
+            )
+            self.db.commit()
+            raise
+        finally:
+            driver.disconnect()
 
     def sync_onus(self, olt: Olt) -> dict:
         driver = self.olt_service.driver_for(olt)
@@ -488,3 +744,45 @@ class OltCliService:
         if rx_power < -24:
             return "warning"
         return "normal"
+
+    def _pon_from_onu_interface(self, interface: str) -> str:
+        match = re.match(r"gpon-onu_(\d+/\d+/\d+):\d+", interface)
+        if not match:
+            return interface.replace("gpon-onu_", "gpon-olt_").split(":")[0]
+        return f"gpon-olt_{match.group(1)}"
+
+    def _parse_pon_interface(self, interface_name: str) -> tuple[int, int, int]:
+        match = re.match(r"gpon-olt_(\d+)/(\d+)/(\d+)", interface_name)
+        if not match:
+            return 0, 0, 0
+        return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+    def _physical_pon_interfaces_from_cards(self, olt_id: int) -> set[str]:
+        interfaces: set[str] = set()
+        cards = self.db.scalars(select(OltCard).where(OltCard.olt_id == olt_id)).all()
+        for card in cards:
+            if not self._is_gpon_card(card.card_type or card.real_type):
+                continue
+            rack, slot = self._rack_slot_from_card(card.slot_number)
+            for port in range(1, (card.port_count or 0) + 1):
+                interfaces.add(f"gpon-olt_{rack}/{slot}/{port}")
+        return interfaces
+
+    def _is_gpon_card(self, card_type: str | None) -> bool:
+        return bool(card_type and card_type.upper().startswith(("GTGH", "GTGO")))
+
+    def _rack_slot_from_card(self, slot_number: str) -> tuple[int, int]:
+        parts = [int(part) for part in slot_number.split("/") if part.isdigit()]
+        if len(parts) >= 3:
+            return parts[0], parts[2]
+        if len(parts) == 2:
+            return parts[0], parts[1]
+        return 1, parts[0] if parts else 0
+
+    def _pon_sort_key(self, interface_name: str) -> tuple[int, int, int, str]:
+        rack, slot, port = self._parse_pon_interface(interface_name)
+        return rack, slot, port, interface_name
+
+    def _looks_like_uplink_output(self, output: str) -> bool:
+        lowered = output.lower()
+        return any(token in lowered for token in ["xgei", "gei_", "trunk", "hybrid", "uplink", "speed", "mtu"])

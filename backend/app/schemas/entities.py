@@ -190,6 +190,8 @@ class VlanRead(BaseModel):
     is_active: bool = True
     source: str = "imported"
     notes: str | None = None
+    onu_count: int = 0
+    is_default_for_provisioning: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -202,6 +204,7 @@ class VlanCreate(BaseModel):
     is_active: bool = True
     source: str = "manual"
     notes: str | None = None
+    is_default_for_provisioning: bool = False
 
 
 class VlanUpdate(BaseModel):
@@ -210,6 +213,7 @@ class VlanUpdate(BaseModel):
     service_type: str | None = None
     is_active: bool | None = None
     notes: str | None = None
+    is_default_for_provisioning: bool | None = None
 
 
 class OnuTypeCreate(BaseModel):
@@ -242,6 +246,7 @@ class OnuTypeCreate(BaseModel):
     capability_mode: str = "bridging"
     is_active: bool = True
     is_provisioning_allowed: bool = False
+    is_default_for_provisioning: bool = False
     source: str = "manual"
     notes: str | None = None
 
@@ -275,6 +280,7 @@ class OnuTypeUpdate(BaseModel):
     capability_mode: str | None = None
     is_active: bool | None = None
     is_provisioning_allowed: bool | None = None
+    is_default_for_provisioning: bool | None = None
     notes: str | None = None
 
 
@@ -427,6 +433,8 @@ class OltCardRead(BaseModel):
     status: str
     role: str | None = None
     last_seen_at: datetime | None = None
+    last_sync_at: datetime | None = None
+    sync_source: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -438,12 +446,16 @@ class OltUplinkRead(BaseModel):
     interface_type: str | None = None
     admin_status: str
     oper_status: str
+    line_protocol: str = "unknown"
     negotiation: str | None = None
+    speed_kbps: int | None = None
     mtu: int | None = None
     mode: str | None = None
     allowed_vlans: str | None = None
     pvid_untag: int | None = None
+    raw_output: str | None = None
     last_seen_at: datetime | None = None
+    sync_source: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -470,6 +482,12 @@ class PonPortTechnicalRead(PonPortRead):
     oper_status: str = "unknown"
     tx_power: float | None = None
     range_label: str | None = None
+    online_count: int = 0
+    offline_count: int = 0
+    total_count: int = 0
+    occupancy_percent: float = 0
+    last_sync_at: datetime | None = None
+    sync_source: str | None = None
     online_onus: int = 0
     total_onus: int = 0
     load_percent: float = 0
@@ -539,6 +557,24 @@ class OnuSchema(BaseModel):
     distance_m: int | None = None
     status: str = "unknown"
     last_down_cause: str | None = None
+    imported_from_config: bool = False
+    auth_date: datetime | None = None
+    raw_description: str | None = None
+    parsed_zone_name: str | None = None
+    parsed_nap_name: str | None = None
+    parsed_nap_port: int | None = None
+    parsed_odn: str | None = None
+    description_original: str | None = None
+    description_generated: str | None = None
+    zone_name: str | None = None
+    address_reference: str | None = None
+    nap_name: str | None = None
+    nap_port_label: str | None = None
+    odb_name: str | None = None
+    external_id: str | None = None
+    description_parse_status: str | None = None
+    description_parse_warnings: list[str] | str | None = None
+    source: str = "manual"
     import_source: str = "manual"
 
 
@@ -731,27 +767,45 @@ class UnauthorizedOnuEventRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-PROVISIONING_STATUSES = {"draft", "validated", "validation_failed", "approved", "executed", "cancelled"}
+PROVISIONING_STATUSES = {"draft", "validated", "validation_failed", "approved", "preflight_passed", "preflight_failed", "executed", "cancelled"}
 
 
 class ProvisioningPlanCreate(BaseModel):
     unauthorized_onu_id: int
     customer_name: str
     customer_reference: str | None = None
+    onu_name: str | None = None
+    onu_description: str | None = None
+    description_original: str | None = None
+    description_generated: str | None = None
+    zone_name: str | None = None
+    address_reference: str | None = None
+    nap_name: str | None = None
+    nap_port_label: str | None = None
+    odb_name: str | None = None
+    external_id: str | None = None
+    auth_date: datetime | None = None
+    description_parse_status: str | None = None
+    description_parse_warnings: list[str] | str | None = None
     technical_comment: str | None = None
     address: str | None = None
     notes: str | None = None
     zone_id: int
     nap_id: int
-    nap_port: int = Field(ge=1)
+    nap_port: int | None = Field(default=None, ge=1)
     onu_type: str
-    vlan: int
+    vlan: int = Field(ge=1)
     speed_profile_up: str = ""
     speed_profile_down: str = ""
     speed_profile_id: int | None = None
-    upload_profile_id: int | None = None
-    download_profile_id: int | None = None
+    upload_profile_id: int = Field(ge=1)
+    download_profile_id: int = Field(ge=1)
     selected_onu_id: int | None = Field(default=None, ge=1)
+    allow_manual_onu_id: bool = False
+    onu_mode: str = "router"
+    vlan_lan_mode: str = "tag"
+    ethernet_port: str = "eth_0/1"
+    dhcp_mode: str = "from-internet"
 
     @field_validator("customer_name", "onu_type")
     @classmethod
@@ -771,12 +825,29 @@ class ProvisioningPlanRead(BaseModel):
     pon_port_interface: str | None = None
     customer_name: str
     customer_reference: str | None = None
+    onu_name: str | None = None
+    onu_description: str | None = None
+    description_original: str | None = None
+    description_generated: str | None = None
+    zone_name: str | None = None
+    address_reference: str | None = None
+    nap_name: str | None = None
+    nap_port_label: str | None = None
+    odb_name: str | None = None
+    external_id: str | None = None
+    description_parse_status: str | None = None
+    description_parse_warnings: list[str] | str | None = None
+    onu_mode: str = "router"
+    vlan_lan_mode: str = "tag"
+    ethernet_port: str = "eth_0/1"
+    dhcp_mode: str = "from-internet"
+    allow_manual_onu_id: bool = False
     technical_comment: str | None = None
     address: str | None = None
     notes: str | None = None
     zone_id: int
     nap_id: int
-    nap_port: int
+    nap_port: int | None = None
     onu_type: str
     vlan: int
     speed_profile_up: str
@@ -811,6 +882,9 @@ class ProvisioningPlanCounts(BaseModel):
     validated: int = 0
     validation_failed: int = 0
     approved: int = 0
+    preflight_passed: int = 0
+    preflight_failed: int = 0
+    executed: int = 0
     cancelled: int = 0
 
 
@@ -824,7 +898,16 @@ class ProvisioningValidationResultRead(BaseModel):
     selected_onu_id: int | None = None
     occupied_onu_ids: list[int] = []
     cli_preview: str | None = None
+    preflight_checks: dict = {}
     validated_at: datetime
+
+
+class ProvisioningPreflightResponse(BaseModel):
+    plan: ProvisioningPlanRead
+    is_valid: bool
+    checks: dict
+    warnings: list[str]
+    errors: list[str]
 
 
 class MonitoringExecutionRead(BaseModel):

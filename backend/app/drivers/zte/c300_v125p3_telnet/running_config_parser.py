@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import re
 
+from app.drivers.zte.c300_v125p3_telnet.zte_onu_description_parser import parse_onu_description
+
 
 @dataclass(frozen=True)
 class ParsedVlan:
@@ -100,6 +102,10 @@ class ParsedOnu:
     parsed_nap_name: str | None = None
     parsed_nap_port: int | None = None
     parsed_odn: str | None = None
+    address_reference: str | None = None
+    external_id: str | None = None
+    description_parse_status: str | None = None
+    description_parse_warnings: list[str] = field(default_factory=list)
     auth_date: datetime | None = None
     vlan: int | None = None
     upstream_profile: str | None = None
@@ -511,31 +517,19 @@ def _parse_onus(lines: list[str]) -> tuple[list[ParsedOnu], list[str]]:
 
 
 def _apply_description(onu: ParsedOnu, description: str) -> list[str]:
-    warnings: list[str] = []
-    patterns = {
-        "parsed_zone_name": r"zone_(.*?)_descr_",
-        "parsed_nap_name": r"Nap_(.*?)_Puerto_",
-        "parsed_nap_port": r"(?:^|_)Puerto_(\d+)",
-        "parsed_odn": r"odb_(.*?)_extid_",
-        "serial_number": r"extid_(.*?)_authd_",
-        "auth_date": r"(?:^|_)authd_(\d{8})",
-    }
-    for field_name, pattern in patterns.items():
-        match = re.search(pattern, description, re.I)
-        if not match:
-            warnings.append(f"missing {field_name} in description")
-            continue
-        value = match.group(1)
-        if field_name == "parsed_nap_port":
-            onu.parsed_nap_port = int(value)
-        elif field_name == "auth_date":
-            try:
-                onu.auth_date = datetime.strptime(value, "%Y%m%d").replace(tzinfo=UTC)
-            except ValueError:
-                warnings.append("invalid auth_date in description")
-        else:
-            setattr(onu, field_name, value)
-    return warnings
+    parsed = parse_onu_description(description)
+    onu.parsed_zone_name = parsed.zone_name
+    onu.parsed_nap_name = parsed.nap_name
+    onu.parsed_nap_port = int(parsed.nap_port_label) if parsed.nap_port_label and parsed.nap_port_label.isdigit() else None
+    onu.parsed_odn = parsed.odb_name
+    onu.address_reference = parsed.address_reference
+    onu.external_id = parsed.external_id
+    onu.auth_date = parsed.auth_date
+    onu.description_parse_status = parsed.parse_status
+    onu.description_parse_warnings = parsed.warnings
+    if parsed.external_id:
+        onu.serial_number = parsed.external_id
+    return parsed.warnings
 
 
 def _first_int(value: str) -> int | None:

@@ -262,12 +262,17 @@ def test_provisioning_uses_speed_profile_and_blocks_occupied_nap_port(db_session
         ProvisioningPlanCreate(
             unauthorized_onu_id=unauthorized.id,
             customer_name="Cliente",
+            onu_name="Cliente_ONU",
+            onu_description="$$$$zone_Zone_1_descr__extid_GPON00CBAC10_authd_20210124",
             zone_id=catalog["zone"].id,
             nap_id=catalog["nap"].id,
             nap_port=2,
             onu_type="VSOL",
             vlan=200,
             speed_profile_id=speed.id,
+            upload_profile_id=speed.upload_profile_id,
+            download_profile_id=speed.download_profile_id,
+            selected_onu_id=1,
         )
     )
     _, result = ProvisioningService(db_session).validate_and_update(plan.id)

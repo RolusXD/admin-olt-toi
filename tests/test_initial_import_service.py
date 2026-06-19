@@ -188,6 +188,15 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert onu.parsed_nap_name == "C1"
     assert onu.parsed_nap_port == 2
     assert onu.parsed_odn == "ODN_C01"
+    assert onu.description_original == onu.raw_description
+    assert onu.description_generated == onu.raw_description
+    assert onu.zone_name == "Lagunas"
+    assert onu.address_reference == "Av_Venezuela"
+    assert onu.nap_name == "C1"
+    assert onu.nap_port_label == "2"
+    assert onu.odb_name == "ODN_C01"
+    assert onu.external_id == "BTPTDD2459E4"
+    assert onu.description_parse_status == "parsed"
     assert onu.imported_from_config is True
     assert onu.source == "cli_import"
     assert onu.import_source == "text_input"

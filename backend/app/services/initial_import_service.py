@@ -399,10 +399,20 @@ class InitialImportService:
         onu.imported_from_config = True
         onu.auth_date = parsed.auth_date
         onu.raw_description = parsed.raw_description
+        onu.description_original = onu.description_original or parsed.raw_description
+        onu.description_generated = onu.description_generated or parsed.raw_description
         onu.parsed_zone_name = parsed.parsed_zone_name
         onu.parsed_nap_name = parsed.parsed_nap_name
         onu.parsed_nap_port = parsed.parsed_nap_port
         onu.parsed_odn = parsed.parsed_odn
+        onu.zone_name = parsed.parsed_zone_name
+        onu.address_reference = parsed.address_reference
+        onu.nap_name = parsed.parsed_nap_name
+        onu.nap_port_label = str(parsed.parsed_nap_port) if parsed.parsed_nap_port is not None else None
+        onu.odb_name = parsed.parsed_odn
+        onu.external_id = parsed.external_id or parsed.serial_number
+        onu.description_parse_status = parsed.description_parse_status
+        onu.description_parse_warnings = json.dumps(parsed.description_parse_warnings, ensure_ascii=True)
         onu.source = "cli_import"
         onu.import_source = self.IMPORT_SOURCE_BY_JOB_SOURCE.get(job.source, "manual")
         return onu

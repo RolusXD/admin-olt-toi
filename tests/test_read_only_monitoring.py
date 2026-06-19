@@ -60,7 +60,7 @@ from app.drivers.errors import DriverCommandError
 from app.drivers.zte.c300_v125p3_telnet.driver import ZteC300V125P3TelnetDriver
 from app.drivers.zte.c300_v125p3_telnet.parsers import CardInfo, OnuPower, OnuState
 from app.models.base import Base
-from app.models.entities import DriverCommandLog, Olt, Onu
+from app.models.entities import DriverCommandLog, Olt, OltCard, OltUplink, Onu, PonPort
 from app.schemas.entities import OltCreate, OltRead
 from app.services.olt_cli_service import OltCliService
 from app.services.olt_service import OltService
@@ -132,11 +132,40 @@ class FakeReadOnlyDriver:
 
     def execute(self, command: str, read_only: bool = True):
         self.commands.append(command)
+        if command == "show interface brief":
+            return "xgei_1/2/1 up 10000M trunk mtu 1500\ngei_1/2/2 down 1000M access"
+        if command == "show interface xgei":
+            return "xgei_1/2/1 description UPLINK trunk vlan 200 mtu 1500"
+        if command == "show interface gei":
+            return "% Invalid input"
+        if command == "show interface":
+            return """
+xgei_1/19/1 is up,  line protocol is up
+  Description is -TOI
+  The port negotiation is disable
+  The port is optical
+  VLAN mode is trunk, pvid 1          BW 10000000 Kbits
+  MTU 1500 bytes
+
+xgei_1/19/2 is down,  line protocol is down
+  Description is
+  The port is optical
+  VLAN mode is hybrid, pvid 1          BW 10000000 Kbits
+  MTU 1500 bytes
+
+gei_1/20/1 is up,  line protocol is up
+  Description is BACKUP
+  The port is electrical
+  VLAN mode is access, pvid 200          BW 1000000 Kbits
+  MTU 1500 bytes
+"""
+        if command == "show vlan brief":
+            return "vlan 200 active"
         return "ZXA10 C300 Software Version V1.2.5P3"
 
     def show_card(self):
         self.commands.append("show card")
-        return [CardInfo(slot="1/2", card_type="GTGO", status="online")]
+        return [CardInfo(slot="1/1/2", card_type="GTGHG", status="online", real_type="GTGHG", firmware="V1.2.5P3", role="main", ports=16)]
 
     def show_onu_state(self):
         self.commands.append("show gpon onu state")
@@ -191,6 +220,93 @@ def test_read_only_check_does_not_execute_dangerous_commands(db_session, olt):
     assert result["onu_counts"] == {"total": 3, "working": 1, "offline": 0, "los": 1, "dying_gasp": 1}
     assert driver.commands == ["show version-running", "show card", "show gpon onu state"]
     assert not any(command.startswith(("configure", "write", "reboot", "reload", "reset", "delete", "erase")) for command in driver.commands)
+
+
+def test_sync_cards_persists_cards_and_logs_read_only(db_session, olt):
+    driver = FakeReadOnlyDriver()
+
+    result = service_with_driver(db_session, driver).sync_cards(olt)
+
+    card = db_session.scalar(select(OltCard).where(OltCard.olt_id == olt.id, OltCard.slot_number == "1/1/2"))
+    log = db_session.scalar(select(DriverCommandLog).where(DriverCommandLog.command == "show card"))
+    assert result["detected"] == 1
+    assert card is not None
+    assert card.card_type == "GTGHG"
+    assert card.real_type == "GTGHG"
+    assert card.firmware == "V1.2.5P3"
+    assert card.role == "main"
+    assert card.port_count == 16
+    assert card.sync_source == "Telnet Read-Only"
+    assert card.last_sync_at is not None
+    assert log.read_only is True
+    assert driver.commands == ["show card"]
+
+
+def test_sync_pon_status_persists_counts_from_onu_state(db_session, olt):
+    driver = FakeReadOnlyDriver()
+    service = service_with_driver(db_session, driver)
+    service.sync_cards(olt)
+    driver.commands.clear()
+
+    result = service.sync_pon_status(olt)
+
+    pon = db_session.scalar(select(PonPort).where(PonPort.olt_id == olt.id, PonPort.interface_name == "gpon-olt_1/2/3"))
+    empty_pon = db_session.scalar(select(PonPort).where(PonPort.olt_id == olt.id, PonPort.interface_name == "gpon-olt_1/2/16"))
+    assert result["pon_ports_detected"] == 16
+    assert pon is not None
+    assert pon.online_count == 1
+    assert pon.offline_count == 2
+    assert pon.total_count == 3
+    assert pon.last_sync_at is not None
+    assert pon.sync_source == "Telnet Read-Only"
+    assert empty_pon is not None
+    assert empty_pon.online_count == 0
+    assert empty_pon.offline_count == 0
+    assert empty_pon.total_count == 0
+    assert empty_pon.oper_status == "empty"
+    assert empty_pon.last_sync_at is not None
+    assert driver.commands == ["show gpon onu state"]
+
+
+def test_discover_uplinks_executes_only_show_commands_and_logs_outputs(db_session, olt):
+    driver = FakeReadOnlyDriver()
+
+    result = service_with_driver(db_session, driver).discover_uplinks(olt)
+
+    assert result["commands_tested"] == 5
+    assert result["best_command"] in {"show interface brief", "show interface xgei", "show interface"}
+    assert all(command.startswith("show ") for command in driver.commands)
+    assert not any(command.startswith(("configure", "write", "save", "reboot", "reload", "reset", "delete", "erase")) for command in driver.commands)
+    logs = db_session.scalars(select(DriverCommandLog).where(DriverCommandLog.olt_id == olt.id)).all()
+    assert len(logs) == 5
+    assert all(log.read_only is True for log in logs)
+
+
+def test_sync_uplinks_executes_only_show_interface_and_persists(db_session, olt):
+    driver = FakeReadOnlyDriver()
+
+    result = service_with_driver(db_session, driver).sync_uplinks(olt)
+
+    uplink = db_session.scalar(select(OltUplink).where(OltUplink.olt_id == olt.id, OltUplink.interface_name == "xgei_1/19/1"))
+    assert result["best_command"] == "show interface"
+    assert result["interfaces_parsed"] == 3
+    assert result["uplinks_detected"] == 3
+    assert driver.commands == ["show interface"]
+    assert not any(command.startswith(("configure", "write", "save", "reboot", "reload", "reset", "delete", "erase")) for command in driver.commands)
+    assert uplink is not None
+    assert uplink.description == "-TOI"
+    assert uplink.interface_type == "fiber"
+    assert uplink.oper_status == "up"
+    assert uplink.line_protocol == "up"
+    assert uplink.mode == "trunk"
+    assert uplink.pvid_untag == 1
+    assert uplink.speed_kbps == 10000000
+    assert uplink.mtu == 1500
+    assert uplink.raw_output and "xgei_1/19/1 is up" in uplink.raw_output
+    assert uplink.sync_source == "Telnet Read-Only"
+    log = db_session.scalar(select(DriverCommandLog).where(DriverCommandLog.olt_id == olt.id, DriverCommandLog.command == "show interface"))
+    assert log is not None
+    assert log.read_only is True
 
 
 def test_sync_power_with_limit_processes_no_more_than_limit(db_session, olt):

@@ -4,18 +4,26 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.drivers.errors import DriverCommandError
+from app.drivers.zte.c300_v125p3_telnet.zte_onu_description_builder import build_onu_description
+from app.drivers.zte.c300_v125p3_telnet.zte_onu_description_parser import parse_onu_description
+from app.drivers.zte.c300_v125p3_telnet.zte_c300_uncfg_parser import parse_show_gpon_onu_uncfg
 from app.models.entities import (
+    DriverCommandLog,
     GponProfile,
     Nap,
     NapPort,
     Olt,
+    OltCard,
     Onu,
     OnuType,
+    PonPort,
     ProfileCatalog,
     ProvisioningPlan,
     ProvisioningTemplate,
@@ -26,18 +34,44 @@ from app.models.entities import (
     Zone,
 )
 from app.schemas.entities import ProvisioningPlanCreate
+from app.services.olt_service import OltService
 
 
-VALID_PLAN_STATUSES = {"draft", "validated", "validation_failed", "approved", "executed", "cancelled"}
+VALID_PLAN_STATUSES = {"draft", "validated", "validation_failed", "approved", "preflight_passed", "preflight_failed", "executed", "cancelled"}
+PREFLIGHT_CHECK_KEYS = {
+    "olt_accessible",
+    "card_exists",
+    "pon_exists",
+    "onu_detected",
+    "serial_detected",
+    "onu_id_available",
+    "vlan_exists",
+    "upload_profile_exists",
+    "download_profile_exists",
+    "onu_type_exists",
+}
 DEFAULT_TEMPLATE_BODY = """interface {pon_port_interface}
 onu {onu_index} type {onu_type} sn {serial_number}
 exit
 interface {onu_interface}
 name {customer_name_cli}
-description zone_{zone_name}_descr_Nap_{nap_name}_Puerto_{nap_port}
+description {description_generated}
 tcont 1 profile {speed_profile_up}
+gemport 1 unicast tcont 1 dir both
 gemport 1 traffic-limit downstream {speed_profile_down}
+switchport mode hybrid vport 1
 switchport vlan {vlan} tag vport 1
+exit
+pon-onu-mng {onu_interface}
+loop-detect ethuni {ethernet_port} enable
+flow mode 1 tag-filter vid-filter untag-filter discard
+flow 1 priority 0 vid {vlan}
+gemport 1 flow 1
+switchport-bind switch_0/1 veip 1
+vlan port {ethernet_port} mode {vlan_lan_mode} vlan {vlan}
+dhcp-ip ethuni {ethernet_port} {dhcp_mode}
+security-mng 998 state enable mode permit ingress-type lan protocol web https
+security-mng 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069
 exit"""
 
 
@@ -101,6 +135,21 @@ class ProvisioningService:
             download_profile.name if download_profile else speed_profile.downstream_profile_name if speed_profile else payload.speed_profile_down
         )
         onu_type = self._resolve_onu_type_value(payload.onu_type, olt.id, olt)
+        occupied_onu_ids = self.occupied_onu_ids(olt.id, unauthorized.pon_port_interface)
+        suggested_onu_id = self.next_available_onu_id(occupied_onu_ids)
+        selected_onu_id = payload.selected_onu_id or suggested_onu_id
+        zone = self.db.get(Zone, payload.zone_id)
+        nap = self.db.get(Nap, payload.nap_id)
+        description_generated = payload.description_generated or payload.onu_description or build_onu_description(
+            zone=payload.zone_name or (zone.name if zone else None),
+            address_reference=payload.address_reference or payload.address or "",
+            nap_name=payload.nap_name or (nap.name if nap else None),
+            nap_port_label=payload.nap_port_label or payload.nap_port,
+            odb_name=payload.odb_name,
+            serial=unauthorized.serial_number,
+            auth_date=payload.auth_date,
+        )
+        parsed_description = parse_onu_description(description_generated)
 
         plan = ProvisioningPlan(
             olt_id=olt.id,
@@ -110,6 +159,23 @@ class ProvisioningService:
             pon_port_interface=unauthorized.pon_port_interface,
             customer_name=payload.customer_name,
             customer_reference=payload.customer_reference,
+            onu_name=payload.customer_name,
+            onu_description=description_generated,
+            description_original=payload.description_original,
+            description_generated=description_generated,
+            zone_name=payload.zone_name or parsed_description.zone_name or (zone.name if zone else None),
+            address_reference=payload.address_reference or parsed_description.address_reference or payload.address,
+            nap_name=payload.nap_name or parsed_description.nap_name or (nap.name if nap else None),
+            nap_port_label=payload.nap_port_label or parsed_description.nap_port_label or (str(payload.nap_port) if payload.nap_port else None),
+            odb_name=payload.odb_name or parsed_description.odb_name,
+            external_id=payload.external_id or parsed_description.external_id or unauthorized.serial_number,
+            description_parse_status=parsed_description.parse_status,
+            description_parse_warnings=json.dumps(parsed_description.warnings, ensure_ascii=True),
+            onu_mode=payload.onu_mode,
+            vlan_lan_mode=payload.vlan_lan_mode,
+            ethernet_port=payload.ethernet_port,
+            dhcp_mode=payload.dhcp_mode,
+            allow_manual_onu_id=payload.allow_manual_onu_id,
             technical_comment=payload.technical_comment,
             address=payload.address,
             notes=payload.notes,
@@ -123,7 +189,8 @@ class ProvisioningService:
             speed_profile_id=speed_profile.id if speed_profile else None,
             upload_profile_id=upload_profile.id if upload_profile else None,
             download_profile_id=download_profile.id if download_profile else None,
-            selected_onu_id=payload.selected_onu_id,
+            selected_onu_id=selected_onu_id,
+            suggested_onu_id=suggested_onu_id,
             status="draft",
         )
         result = self.validate(plan)
@@ -170,7 +237,16 @@ class ProvisioningService:
         rows = self.db.execute(
             select(ProvisioningPlan.status, func.count(ProvisioningPlan.id)).group_by(ProvisioningPlan.status)
         ).all()
-        counts = {"draft": 0, "validated": 0, "validation_failed": 0, "approved": 0, "cancelled": 0}
+        counts = {
+            "draft": 0,
+            "validated": 0,
+            "validation_failed": 0,
+            "approved": 0,
+            "preflight_passed": 0,
+            "preflight_failed": 0,
+            "executed": 0,
+            "cancelled": 0,
+        }
         for status, count in rows:
             if status in counts:
                 counts[status] = count
@@ -194,7 +270,10 @@ class ProvisioningService:
         template = self._default_template_object(olt)
         occupied_onu_ids = self.occupied_onu_ids(plan.olt_id, plan.pon_port_interface)
         suggested_onu_id = self.next_available_onu_id(occupied_onu_ids)
-        selected_onu_id = plan.selected_onu_id or suggested_onu_id
+        plan.suggested_onu_id = suggested_onu_id
+        if not plan.selected_onu_id and suggested_onu_id:
+            plan.selected_onu_id = suggested_onu_id
+        selected_onu_id = plan.selected_onu_id
 
         if not olt:
             errors.append("La OLT no existe.")
@@ -213,20 +292,21 @@ class ProvisioningService:
         elif nap.zone_id != plan.zone_id:
             errors.append("La NAP no pertenece a la zona seleccionada.")
 
-        occupied = self.db.scalar(
-            select(Onu).where(
-                Onu.olt_id == plan.olt_id,
-                Onu.nap_id == plan.nap_id,
-                Onu.nap_port == plan.nap_port,
+        if plan.nap_port is not None:
+            occupied = self.db.scalar(
+                select(Onu).where(
+                    Onu.olt_id == plan.olt_id,
+                    Onu.nap_id == plan.nap_id,
+                    Onu.nap_port == plan.nap_port,
+                )
             )
-        )
-        if occupied:
-            errors.append(f"El puerto NAP {plan.nap_port} ya esta ocupado por {occupied.serial_number}.")
-        nap_port = self.db.scalar(select(NapPort).where(NapPort.nap_id == plan.nap_id, NapPort.port_number == plan.nap_port))
-        if not nap_port:
-            errors.append(f"El puerto NAP {plan.nap_port} no existe en la NAP seleccionada.")
-        elif nap_port.status not in {"free", "reserved"}:
-            errors.append(f"El puerto NAP {plan.nap_port} esta en estado {nap_port.status}.")
+            if occupied:
+                errors.append(f"El puerto NAP {plan.nap_port} ya esta ocupado por {occupied.serial_number}.")
+            nap_port = self.db.scalar(select(NapPort).where(NapPort.nap_id == plan.nap_id, NapPort.port_number == plan.nap_port))
+            if not nap_port:
+                errors.append(f"El puerto NAP {plan.nap_port} no existe en la NAP seleccionada.")
+            elif nap_port.status not in {"free", "reserved"}:
+                errors.append(f"El puerto NAP {plan.nap_port} esta en estado {nap_port.status}.")
 
         vlan = self.db.scalar(select(Vlan).where(Vlan.olt_id == plan.olt_id, Vlan.vlan_id == plan.vlan, Vlan.is_active.is_(True)))
         if not vlan:
@@ -290,17 +370,22 @@ class ProvisioningService:
         if lab_duplicate:
             warnings.append(f"La ONU {plan.serial_number} existe en laboratorio ({lab_duplicate.olt_code_snapshot or lab_duplicate.olt_id}).")
 
-        if nap and plan.nap_port > nap.capacity:
+        if nap and plan.nap_port is not None and plan.nap_port > nap.capacity:
             errors.append(f"El puerto NAP {plan.nap_port} supera la capacidad registrada ({nap.capacity}).")
         if not plan.pon_port_interface:
             errors.append("La ONU pendiente no tiene puerto PON detectado.")
 
-        if selected_onu_id in occupied_onu_ids:
+        if not selected_onu_id:
+            errors.append("Debe seleccionar manualmente un ONU ID.")
+        elif selected_onu_id in occupied_onu_ids:
             errors.append(f"El ONU ID {selected_onu_id} ya esta ocupado en {plan.pon_port_interface}.")
         if suggested_onu_id is None:
             errors.append(f"No hay ONU ID disponible en {plan.pon_port_interface}.")
         elif plan.selected_onu_id and plan.selected_onu_id != suggested_onu_id and plan.selected_onu_id not in occupied_onu_ids:
-            warnings.append(f"El ONU ID seleccionado ({plan.selected_onu_id}) difiere del sugerido ({suggested_onu_id}).")
+            if plan.allow_manual_onu_id:
+                warnings.append(f"El ONU ID seleccionado ({plan.selected_onu_id}) difiere del sugerido ({suggested_onu_id}).")
+            else:
+                errors.append("El ONU ID esta bloqueado por defecto. Active override manual para usar un ID distinto al sugerido.")
 
         onu_type = self._resolve_onu_type(plan, olt)
         selected_type = self._onu_type_match_values(onu_type) if onu_type else {(plan.onu_type or "").strip().upper()}
@@ -320,6 +405,17 @@ class ProvisioningService:
 
         if not template:
             errors.append("No existe ProvisioningTemplate activo compatible con vendor/model/firmware de la OLT.")
+
+        description = plan.description_generated or plan.onu_description
+        parsed_description = parse_onu_description(description)
+        if parsed_description.parse_status in {"empty", "unparsed"}:
+            errors.append("Description generado no es compatible con el formato productivo.")
+        if not parsed_description.external_id or parsed_description.external_id != plan.serial_number:
+            errors.append("Description generado debe incluir extid con el serial exacto.")
+        if not parsed_description.auth_date:
+            errors.append("Description generado debe incluir authd con fecha valida.")
+        plan.description_parse_status = parsed_description.parse_status
+        plan.description_parse_warnings = json.dumps(parsed_description.warnings, ensure_ascii=True)
 
         cli_preview = self.generate_cli(plan, unauthorized=unauthorized, onu_id=selected_onu_id, template=template)
         return ValidationResult(
@@ -348,6 +444,19 @@ class ProvisioningService:
         onu_index = onu_id or plan.selected_onu_id or plan.suggested_onu_id or self._onu_index(unauthorized)
         pon_interface = plan.pon_port_interface or (unauthorized.pon_port_interface if unauthorized else "gpon-olt_0/0/0")
         onu_interface = self._onu_interface(pon_interface, onu_index)
+        description_generated = plan.description_generated or plan.onu_description
+        if not description_generated:
+            description_generated = build_onu_description(
+                zone=plan.zone_name or (zone.name if zone else None),
+                address_reference=plan.address_reference or plan.address or "",
+                nap_name=plan.nap_name or (nap.name if nap else None),
+                nap_port_label=plan.nap_port_label or plan.nap_port,
+                odb_name=plan.odb_name,
+                serial=plan.serial_number,
+                auth_date=None,
+            )
+            plan.description_generated = description_generated
+            plan.onu_description = description_generated
         context = {
             "pon_port_interface": pon_interface,
             "onu_index": onu_index,
@@ -356,12 +465,20 @@ class ProvisioningService:
             "serial_number": plan.serial_number,
             "customer_name": plan.customer_name,
             "customer_name_cli": self._cli_name(plan.customer_name),
+            "onu_name": plan.onu_name or plan.customer_name,
+            "onu_name_cli": self._cli_name(plan.onu_name or plan.customer_name),
+            "onu_description": description_generated,
+            "description_generated": description_generated,
             "zone_name": self._cli_name(zone.name if zone else "SIN_ZONA"),
             "nap_name": self._cli_name(nap.name if nap else "SIN_NAP"),
-            "nap_port": plan.nap_port,
+            "nap_port": plan.nap_port or "",
             "vlan": plan.vlan,
             "speed_profile_up": plan.speed_profile_up,
             "speed_profile_down": plan.speed_profile_down,
+            "onu_mode": plan.onu_mode,
+            "vlan_lan_mode": plan.vlan_lan_mode,
+            "ethernet_port": plan.ethernet_port,
+            "dhcp_mode": plan.dhcp_mode,
         }
         return template_body.format(**context)
 
@@ -507,6 +624,8 @@ class ProvisioningService:
         validation_result.occupied_onu_ids_json = json.dumps(result.occupied_onu_ids)
         validation_result.cli_preview = result.cli_preview
         validation_result.validated_at = result.validated_at
+        if validation_result.preflight_checks_json is None:
+            validation_result.preflight_checks_json = json.dumps({})
 
     @staticmethod
     def _onu_index(unauthorized: UnauthorizedOnu | None) -> int:
@@ -537,6 +656,23 @@ def plan_to_dict(plan: ProvisioningPlan) -> dict:
         "pon_port_interface": plan.pon_port_interface,
         "customer_name": plan.customer_name,
         "customer_reference": plan.customer_reference,
+        "onu_name": plan.onu_name,
+        "onu_description": plan.onu_description,
+        "description_original": plan.description_original,
+        "description_generated": plan.description_generated,
+        "zone_name": plan.zone_name,
+        "address_reference": plan.address_reference,
+        "nap_name": plan.nap_name,
+        "nap_port_label": plan.nap_port_label,
+        "odb_name": plan.odb_name,
+        "external_id": plan.external_id,
+        "description_parse_status": plan.description_parse_status,
+        "description_parse_warnings": _loads(plan.description_parse_warnings),
+        "onu_mode": plan.onu_mode,
+        "vlan_lan_mode": plan.vlan_lan_mode,
+        "ethernet_port": plan.ethernet_port,
+        "dhcp_mode": plan.dhcp_mode,
+        "allow_manual_onu_id": plan.allow_manual_onu_id,
         "technical_comment": plan.technical_comment,
         "address": plan.address,
         "notes": plan.notes,
@@ -584,6 +720,7 @@ def validation_result_to_dict(result: ProvisioningValidationResult) -> dict:
         "selected_onu_id": result.selected_onu_id,
         "occupied_onu_ids": _loads_ints(result.occupied_onu_ids_json),
         "cli_preview": result.cli_preview,
+        "preflight_checks": _loads_dict(result.preflight_checks_json),
         "validated_at": result.validated_at,
     }
 
@@ -606,3 +743,263 @@ def validation_result_to_payload(result: ValidationResult, plan_id: int, result_
 def _loads_ints(value: str | None) -> list[int]:
     loaded = _loads(value)
     return [int(item) for item in loaded if isinstance(item, int | float | str) and str(item).isdigit()]
+
+
+def _loads_dict(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+class ProvisioningPreflightService:
+    """Read-only real-time checks before provisioning execution is allowed."""
+
+    def __init__(self, db: Session):
+        self.db = db
+        self.olt_service = OltService(db)
+
+    def run(self, plan_id: int) -> tuple[ProvisioningPlan, dict]:
+        plan = self.db.get(ProvisioningPlan, plan_id)
+        if not plan:
+            raise HTTPException(status_code=404, detail="Plan de aprovisionamiento no encontrado")
+        if plan.status != "approved":
+            raise HTTPException(status_code=409, detail="El preflight solo puede ejecutarse sobre planes approved")
+
+        olt = self.db.get(Olt, plan.olt_id)
+        if not olt:
+            raise HTTPException(status_code=404, detail="OLT no encontrada")
+
+        checks = {key: False for key in PREFLIGHT_CHECK_KEYS}
+        warnings: list[str] = []
+        errors: list[str] = []
+        driver = self.olt_service.driver_for(olt)
+        cards = []
+        uncfg_output = ""
+        states = []
+
+        try:
+            driver.connect(disable_paging=False)
+            try:
+                version_output = self._call_read_only(olt.id, "show version-running", lambda: driver.execute("show version-running", read_only=True))
+                checks["olt_accessible"] = bool(version_output)
+            except Exception as exc:
+                errors.append(f"No se pudo acceder a la OLT: {self._error_message(exc)}")
+
+            try:
+                cards = self._call_read_only(olt.id, "show card", driver.show_card)
+            except Exception as exc:
+                errors.append(f"No se pudo leer show card: {self._error_message(exc)}")
+
+            try:
+                uncfg_output = self._call_read_only(olt.id, "show gpon onu uncfg", driver.show_uncfg_raw)
+            except Exception as exc:
+                errors.append(f"No se pudo leer ONU Discovery: {self._error_message(exc)}")
+
+            try:
+                states = self._call_read_only(olt.id, "show gpon onu state", driver.show_onu_state)
+            except Exception as exc:
+                errors.append(f"No se pudo leer estado de ONUs: {self._error_message(exc)}")
+        finally:
+            driver.disconnect()
+
+        pon_parts = self._parse_pon_interface(plan.pon_port_interface)
+        card = self._matching_card(cards, pon_parts["slot"])
+        checks["card_exists"] = bool(card and self._card_is_operational(card))
+        if not checks["card_exists"]:
+            errors.append(f"No se encontro tarjeta GPON operativa en slot {pon_parts['slot']}.")
+
+        checks["pon_exists"] = self._pon_exists(plan, pon_parts, card)
+        if not checks["pon_exists"]:
+            errors.append(f"El puerto PON {plan.pon_port_interface or '-'} no existe fisicamente o no esta operativo.")
+
+        detected_onus = parse_show_gpon_onu_uncfg(uncfg_output)
+        exact_detected = [onu for onu in detected_onus if onu.serial_number == plan.serial_number]
+        checks["serial_detected"] = bool(exact_detected)
+        checks["onu_detected"] = bool(
+            exact_detected
+            and any(not plan.pon_port_interface or onu.pon_port_interface == plan.pon_port_interface for onu in exact_detected)
+        )
+        if not checks["serial_detected"]:
+            errors.append(f"El serial exacto {plan.serial_number} no aparece en show gpon onu uncfg.")
+        elif not checks["onu_detected"]:
+            errors.append(f"El serial {plan.serial_number} aparece, pero no en {plan.pon_port_interface}.")
+
+        selected_onu_id = plan.selected_onu_id or plan.suggested_onu_id
+        expected_onu_interface = self._onu_interface(plan.pon_port_interface, selected_onu_id)
+        checks["onu_id_available"] = bool(
+            selected_onu_id
+            and expected_onu_interface
+            and not any(state.interface == expected_onu_interface for state in states)
+        )
+        if not checks["onu_id_available"]:
+            errors.append(f"El ONU ID {selected_onu_id or '-'} no esta libre en {plan.pon_port_interface}.")
+
+        checks["vlan_exists"] = bool(
+            self.db.scalar(select(Vlan.id).where(Vlan.olt_id == plan.olt_id, Vlan.vlan_id == plan.vlan, Vlan.is_active.is_(True)))
+        )
+        if not checks["vlan_exists"]:
+            errors.append(f"La VLAN {plan.vlan} no existe o no esta activa.")
+
+        checks["upload_profile_exists"] = self._profile_exists(plan, "upload", "tcont", plan.speed_profile_up, plan.upload_profile_id)
+        if not checks["upload_profile_exists"]:
+            errors.append(f"El perfil UP {plan.speed_profile_up or '-'} no existe o no esta activo.")
+
+        checks["download_profile_exists"] = self._profile_exists(plan, "download", "traffic", plan.speed_profile_down, plan.download_profile_id)
+        if not checks["download_profile_exists"]:
+            errors.append(f"El perfil DOWN {plan.speed_profile_down or '-'} no existe o no esta activo.")
+
+        checks["onu_type_exists"] = bool(
+            self.db.scalar(
+                select(OnuType.id).where(
+                    OnuType.olt_id == plan.olt_id,
+                    OnuType.name == plan.onu_type,
+                    OnuType.is_active.is_(True),
+                    OnuType.is_provisioning_allowed.is_(True),
+                )
+            )
+        )
+        if not checks["onu_type_exists"]:
+            errors.append(f"El tipo ONU {plan.onu_type} no existe, no esta activo o no permite provisioning.")
+
+        is_valid = not errors and all(checks.values())
+        plan.status = "preflight_passed" if is_valid else "preflight_failed"
+        validation_result = plan.validation_result
+        if not validation_result:
+            validation_result = ProvisioningValidationResult(provisioning_plan_id=plan.id)
+            plan.validation_result = validation_result
+        validation_result.is_valid = is_valid
+        validation_result.warnings_json = json.dumps(warnings)
+        validation_result.errors_json = json.dumps(errors)
+        validation_result.suggested_onu_id = plan.suggested_onu_id
+        validation_result.selected_onu_id = plan.selected_onu_id
+        validation_result.occupied_onu_ids_json = validation_result.occupied_onu_ids_json or "[]"
+        validation_result.cli_preview = plan.generated_cli
+        validation_result.preflight_checks_json = json.dumps(checks)
+        validation_result.validated_at = datetime.now(timezone.utc)
+        plan.validated_at = validation_result.validated_at
+        plan.validation_warnings_json = json.dumps(warnings)
+        plan.validation_errors_json = json.dumps(errors)
+        plan.validation_result_json = json.dumps(
+            {
+                "checks": checks,
+                "warnings": warnings,
+                "errors": errors,
+                "is_valid": is_valid,
+                "validated_at": validation_result.validated_at.isoformat(),
+            }
+        )
+        self.db.commit()
+        self.db.refresh(plan)
+        return plan, {"is_valid": is_valid, "checks": checks, "warnings": warnings, "errors": errors}
+
+    def _call_read_only(self, olt_id: int, command: str, func):
+        started = perf_counter()
+        try:
+            result = func()
+            self._log_command(olt_id, command, True, str(result), duration_ms=int((perf_counter() - started) * 1000))
+            return result
+        except DriverCommandError as exc:
+            self._log_command(
+                olt_id,
+                exc.command or command,
+                False,
+                exc.output,
+                error=exc.message,
+                duration_ms=int((perf_counter() - started) * 1000),
+            )
+            raise
+        except Exception as exc:
+            self._log_command(olt_id, command, False, error=str(exc), duration_ms=int((perf_counter() - started) * 1000))
+            raise
+
+    def _log_command(
+        self,
+        olt_id: int,
+        command: str,
+        success: bool,
+        output: str | None = None,
+        error: str | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        self.db.add(
+            DriverCommandLog(
+                olt_id=olt_id,
+                command=command,
+                success=success,
+                read_only=True,
+                duration_ms=duration_ms,
+                error_message=error,
+                output_excerpt=(output or "")[:2000] if output else None,
+            )
+        )
+        self.db.flush()
+
+    @staticmethod
+    def _error_message(exc: Exception) -> str:
+        return getattr(exc, "message", str(exc))
+
+    @staticmethod
+    def _parse_pon_interface(interface_name: str | None) -> dict[str, int]:
+        match = re.match(r"gpon-olt_(?P<rack>\d+)/(?P<slot>\d+)/(?P<port>\d+)", interface_name or "", re.I)
+        if not match:
+            return {"rack": 0, "slot": 0, "port": 0}
+        return {key: int(value) for key, value in match.groupdict().items()}
+
+    def _matching_card(self, cards, slot: int):
+        for card in cards:
+            if not self._is_gpon_card(card.card_type or card.real_type):
+                continue
+            card_slot = self._card_slot_number(card.slot)
+            if card_slot == slot:
+                return card
+        return None
+
+    @staticmethod
+    def _card_slot_number(slot_value: str | None) -> int:
+        parts = [int(part) for part in (slot_value or "").split("/") if part.isdigit()]
+        if len(parts) >= 3:
+            return parts[2]
+        if len(parts) >= 1:
+            return parts[-1]
+        return 0
+
+    @staticmethod
+    def _is_gpon_card(card_type: str | None) -> bool:
+        return bool(card_type and card_type.upper().startswith(("GTGH", "GTGO")))
+
+    @staticmethod
+    def _card_is_operational(card) -> bool:
+        return (card.status or "").lower() in {"online", "insrv", "inservice", "normal", "standby", "active", "working"}
+
+    def _pon_exists(self, plan: ProvisioningPlan, pon_parts: dict[str, int], card) -> bool:
+        if not plan.pon_port_interface or not card:
+            return False
+        if (card.ports or 0) and pon_parts["port"] > (card.ports or 0):
+            return False
+        stored = self.db.scalar(select(PonPort).where(PonPort.olt_id == plan.olt_id, PonPort.interface_name == plan.pon_port_interface))
+        if stored:
+            return (stored.oper_status or "unknown") not in {"fault", "disabled"}
+        return bool(card.ports and pon_parts["port"] <= card.ports)
+
+    @staticmethod
+    def _onu_interface(pon_interface: str | None, onu_id: int | None) -> str | None:
+        if not pon_interface or not onu_id:
+            return None
+        return pon_interface.replace("gpon-olt_", "gpon-onu_", 1) + f":{onu_id}"
+
+    def _profile_exists(self, plan: ProvisioningPlan, direction: str, profile_kind: str, name: str | None, profile_id: int | None) -> bool:
+        statement = select(ProfileCatalog.id).where(
+            ProfileCatalog.olt_id == plan.olt_id,
+            ProfileCatalog.direction == direction,
+            ProfileCatalog.profile_kind == profile_kind,
+            ProfileCatalog.is_active.is_(True),
+        )
+        if profile_id:
+            statement = statement.where(ProfileCatalog.id == profile_id)
+        else:
+            statement = statement.where(ProfileCatalog.name == name)
+        return bool(self.db.scalar(statement.limit(1)))

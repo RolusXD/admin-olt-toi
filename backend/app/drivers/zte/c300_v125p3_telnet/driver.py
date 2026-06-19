@@ -51,6 +51,8 @@ READ_ONLY_COMMAND_PATTERNS = (
     re.compile(r"^show running-config$", re.I),
     re.compile(r"^show pon power onu-rx gpon-onu_\d+/\d+/\d+:\d+$", re.I),
     re.compile(r"^show pon power onu-tx gpon-onu_\d+/\d+/\d+:\d+$", re.I),
+    re.compile(r"^show interface(?:\s+(?:brief|gei|xgei|gei_\d+/\d+/\d+(?::\d+)?|xgei_\d+/\d+/\d+(?::\d+)?))?$", re.I),
+    re.compile(r"^show vlan(?:\s+brief)?$", re.I),
 )
 PROMPT_PATTERN = re.compile(rb"(?m)(?:[\w.-]+)(?:\(config[^\)]*\))?#\s*$")
 

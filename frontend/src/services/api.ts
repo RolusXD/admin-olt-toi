@@ -23,6 +23,7 @@ import type {
   ProfileCatalog,
   ProvisioningPlan,
   ProvisioningPlanValidation,
+  ProvisioningPreflightResult,
   ProvisioningTemplate,
   ProvisioningValidationResult,
   ReadOnlyCheckResult,
@@ -87,6 +88,10 @@ export const api = {
   oltAdvanced: (id: number | string) => request<OltTechnicalSettings>(`/olts/${id}/advanced`),
   oltPonPorts: (id: number | string) => request<PonPort[]>(`/olts/${id}/pon-ports`),
   oltVlans: (id: number | string) => request<Vlan[]>(`/olts/${id}/vlans`),
+  syncCards: (id: number | string) => request<Record<string, unknown>>(`/olts/${id}/sync-cards`, { method: "POST" }),
+  syncPonStatus: (id: number | string) => request<Record<string, unknown>>(`/olts/${id}/sync-pon-status`, { method: "POST" }),
+  discoverUplinks: (id: number | string) => request<Record<string, unknown>>(`/olts/${id}/discover-uplinks`, { method: "POST" }),
+  syncUplinks: (id: number | string) => request<Record<string, unknown>>(`/olts/${id}/sync-uplinks`, { method: "POST" }),
   zones: (params: Record<string, string | number | undefined | null> = {}) => request<Zone[]>(`/zones${toQuery(params)}`),
   naps: (params: Record<string, string | number | undefined | null> = {}) => request<Nap[]>(`/naps${toQuery(params)}`),
   napPorts: (params: Record<string, string | number | undefined | null> = {}) => request<NapPort[]>(`/nap-ports${toQuery(params)}`),
@@ -172,6 +177,8 @@ export const api = {
     request<ProvisioningValidationResult>(`/provisioning-plans/${id}/validation-result`),
   approveProvisioningPlan: (id: number | string) =>
     request<ProvisioningPlan>(`/provisioning-plans/${id}/approve`, { method: "PUT" }),
+  preflightProvisioningPlan: (id: number | string) =>
+    request<ProvisioningPreflightResult>(`/provisioning-plans/${id}/preflight`, { method: "POST" }),
   cancelProvisioningPlan: (id: number | string) =>
     request<ProvisioningPlan>(`/provisioning-plans/${id}/cancel`, { method: "PUT" }),
   unauthorized: () => request<Array<{ interface: string; serial_number: string; status: string }>>("/provisioning/unauthorized"),

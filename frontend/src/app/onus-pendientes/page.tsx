@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
-import { CheckCircle2, EyeOff, Filter, RefreshCcw, RotateCcw, Search } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { CheckCircle2, EyeOff, Filter, Play, RefreshCcw, RotateCcw, Search } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,6 +47,27 @@ export default function PendingOnusPage() {
     () => olts.data.find((olt) => String(olt.id) === selectedOltId) ?? olts.data[0] ?? null,
     [olts.data, selectedOltId],
   );
+
+  useEffect(() => {
+    if (!selectedOlt || discoveryResult || loading) return;
+    let cancelled = false;
+    setLoading("auto-discover");
+    api.discoverUnauthorizedOnus(selectedOlt.id)
+      .then(async (result) => {
+        if (cancelled) return;
+        setDiscoveryResult(result);
+        pending.setData(await api.unauthorizedOnus(query));
+      })
+      .catch((exc) => {
+        if (!cancelled) setError(exc instanceof Error ? exc.message : "No se pudo ejecutar Discovery");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedOlt?.id, discoveryResult, loading, query]);
 
   function updateFilter(field: keyof Filters, value: string) {
     setFilters((current) => ({ ...current, [field]: value }));
@@ -137,6 +159,7 @@ export default function PendingOnusPage() {
             </label>
             <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
               Discovery solo ejecuta show gpon onu uncfg. No autoriza ONUs, no entra a configure terminal y no modifica la OLT.
+              Al entrar se ejecuta en segundo plano para refrescar la bandeja.
             </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -222,6 +245,7 @@ export default function PendingOnusPage() {
                     "Primera deteccion",
                     "Ultima deteccion",
                     "Veces",
+                    "ONU ID sugerido",
                     "Estado",
                     "Acciones",
                   ].map((heading) => (
@@ -250,6 +274,7 @@ export default function PendingOnusPage() {
                     <td className="px-4 py-3 text-slate-700">{formatDate(onu.first_seen_at)}</td>
                     <td className="px-4 py-3 text-slate-700">{formatDate(onu.last_seen_at)}</td>
                     <td className="px-4 py-3 text-slate-700">{onu.times_detected}</td>
+                    <td className="px-4 py-3 text-slate-700">{extractSuggestedOnuId(onu) || "-"}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded-md px-2 py-1 text-xs ${statusTone(onu.status)}`}>{statusLabel(onu.status)}</span>
                     </td>
@@ -264,13 +289,19 @@ export default function PendingOnusPage() {
                         <Button type="button" onClick={() => changeStatus(onu.id, "ready")} disabled={loading !== null || onu.status === "ready_for_provisioning"}>
                           <CheckCircle2 className="h-4 w-4" /> Lista
                         </Button>
+                        <Link
+                          className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-white transition hover:bg-[#00584f]"
+                          href={`/aprovisionamiento?olt_id=${onu.olt_id}&unauthorized_onu_id=${onu.id}&onu_id=${extractSuggestedOnuId(onu) || ""}`}
+                        >
+                          <Play className="h-4 w-4" /> Aprovisionar
+                        </Link>
                       </div>
                     </td>
                   </tr>
                 ))}
                 {!pending.data.length && (
                   <tr>
-                    <td className="px-4 py-6 text-sm text-muted" colSpan={13}>
+                    <td className="px-4 py-6 text-sm text-muted" colSpan={14}>
                       Sin ONUs pendientes para los filtros seleccionados.
                     </td>
                   </tr>
@@ -303,4 +334,9 @@ function statusTone(status: string) {
   if (status === "ignored") return "bg-slate-100 text-slate-700";
   if (status === "provisioned") return "bg-blue-100 text-blue-800";
   return "bg-amber-100 text-amber-800";
+}
+
+function extractSuggestedOnuId(onu: UnauthorizedOnu) {
+  const match = onu.raw_output?.match(/gpon-onu_\d+\/\d+\/\d+:(\d+)/i);
+  return match?.[1] ?? "";
 }

@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.deps import DbSession
-from app.models.entities import Olt, Vlan
+from app.models.entities import Olt, Onu, Vlan
 from app.schemas.entities import VlanCreate, VlanRead, VlanUpdate
 
 router = APIRouter(prefix="/vlans", tags=["vlans"])
@@ -16,7 +16,7 @@ def list_vlans(
     service_type: str | None = None,
     source: str | None = None,
     is_active: bool | None = Query(default=None),
-) -> list[Vlan]:
+) -> list[dict]:
     statement = select(Vlan)
     if olt_code:
         statement = statement.join(Olt, Vlan.olt_id == Olt.id).where(Olt.olt_code == olt_code.strip().upper())
@@ -28,7 +28,12 @@ def list_vlans(
         statement = statement.where(Vlan.source == source)
     if is_active is not None:
         statement = statement.where(Vlan.is_active.is_(is_active))
-    return list(db.scalars(statement.order_by(Vlan.olt_id, Vlan.vlan_id)))
+    rows = []
+    for vlan in db.scalars(statement.order_by(Vlan.olt_id, Vlan.vlan_id)):
+        data = VlanRead.model_validate(vlan).model_dump()
+        data["onu_count"] = db.scalar(select(func.count()).select_from(Onu).where(Onu.olt_id == vlan.olt_id, Onu.vlan == vlan.vlan_id)) or 0
+        rows.append(data)
+    return rows
 
 
 @router.post("", response_model=VlanRead, status_code=status.HTTP_201_CREATED)
@@ -39,6 +44,8 @@ def create_vlan(payload: VlanCreate, db: DbSession) -> Vlan:
     existing = db.scalar(select(Vlan).where(Vlan.olt_id == payload.olt_id, Vlan.vlan_id == payload.vlan_id))
     if existing:
         raise HTTPException(status_code=409, detail="VLAN already exists for this OLT")
+    if payload.is_default_for_provisioning and payload.is_active:
+        _clear_default(db, payload.olt_id)
     vlan = Vlan(**payload.model_dump(), olt_code_snapshot=olt.olt_code)
     db.add(vlan)
     db.commit()
@@ -61,6 +68,8 @@ def update_vlan(vlan_id: int, payload: VlanUpdate, db: DbSession) -> Vlan:
         raise HTTPException(status_code=404, detail="VLAN not found")
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(vlan, key, value)
+    if vlan.is_default_for_provisioning and vlan.is_active:
+        _clear_default(db, vlan.olt_id, exclude_id=vlan.id)
     db.commit()
     db.refresh(vlan)
     return vlan
@@ -81,6 +90,16 @@ def _set_active(vlan_id: int, active: bool, db: DbSession) -> Vlan:
     if not vlan:
         raise HTTPException(status_code=404, detail="VLAN not found")
     vlan.is_active = active
+    if not active:
+        vlan.is_default_for_provisioning = False
     db.commit()
     db.refresh(vlan)
     return vlan
+
+
+def _clear_default(db: DbSession, olt_id: int, exclude_id: int | None = None) -> None:
+    statement = select(Vlan).where(Vlan.olt_id == olt_id, Vlan.is_default_for_provisioning.is_(True))
+    if exclude_id is not None:
+        statement = statement.where(Vlan.id != exclude_id)
+    for item in db.scalars(statement):
+        item.is_default_for_provisioning = False

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
+import { Button } from "@/components/ui/button";
 import { EnvironmentBadge } from "@/components/ui/environment-badge";
 import { Panel } from "@/components/ui/panel";
 import { api } from "@/services/api";
@@ -15,13 +16,16 @@ export default function OltDetailPage() {
   const params = useParams<{ id: string }>();
   const oltId = params.id;
   const [tab, setTab] = useState<Tab>("details");
-  const olt = useApiData(() => api.olt(oltId), null, [oltId]);
-  const inventory = useApiData(() => api.oltInventorySummary(oltId), null, [oltId]);
-  const cards = useApiData<OltCard[]>(() => api.oltCards(oltId), [], [oltId]);
-  const ponPorts = useApiData<PonPort[]>(() => api.oltPonPorts(oltId), [], [oltId]);
-  const uplinks = useApiData<OltUplink[]>(() => api.oltUplinks(oltId), [], [oltId]);
-  const vlans = useApiData<Vlan[]>(() => api.oltVlans(oltId), [], [oltId]);
-  const advanced = useApiData<OltTechnicalSettings | null>(() => api.oltAdvanced(oltId), null, [oltId]);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const olt = useApiData(() => api.olt(oltId), null, [oltId, reloadKey]);
+  const inventory = useApiData(() => api.oltInventorySummary(oltId), null, [oltId, reloadKey]);
+  const cards = useApiData<OltCard[]>(() => api.oltCards(oltId), [], [oltId, reloadKey]);
+  const ponPorts = useApiData<PonPort[]>(() => api.oltPonPorts(oltId), [], [oltId, reloadKey]);
+  const uplinks = useApiData<OltUplink[]>(() => api.oltUplinks(oltId), [], [oltId, reloadKey]);
+  const vlans = useApiData<Vlan[]>(() => api.oltVlans(oltId), [], [oltId, reloadKey]);
+  const advanced = useApiData<OltTechnicalSettings | null>(() => api.oltAdvanced(oltId), null, [oltId, reloadKey]);
 
   const current = olt.data;
   const title = current ? `${current.olt_code} - ${current.name}` : "OLT";
@@ -37,6 +41,23 @@ export default function OltDetailPage() {
     [],
   );
 
+  async function runAction(action: "cards" | "pon" | "uplinks") {
+    setSyncMessage(null);
+    setSyncError(null);
+    try {
+      const result =
+        action === "cards"
+          ? await api.syncCards(oltId)
+          : action === "pon"
+            ? await api.syncPonStatus(oltId)
+            : await api.syncUplinks(oltId);
+      setSyncMessage("Comando read-only ejecutado y registrado.");
+      setReloadKey((value) => value + 1);
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : "No se pudo ejecutar la accion read-only.");
+    }
+  }
+
   return (
     <AppShell>
       <div className="space-y-5">
@@ -51,6 +72,8 @@ export default function OltDetailPage() {
             </button>
           ))}
         </div>
+        {syncMessage && <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{syncMessage}</div>}
+        {syncError && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">{syncError}</div>}
 
         {tab === "details" && current && (
           <Panel className="p-4">
@@ -83,9 +106,25 @@ export default function OltDetailPage() {
           </Panel>
         )}
 
-        {tab === "cards" && <SimpleTable columns={["Ranura", "Tipo", "Tipo real", "Puertos", "SW", "Estado", "Rol", "Informacion actualizada"]} rows={cards.data.map((card) => [card.slot_number, card.card_type ?? "-", card.real_type ?? "-", card.port_count ?? "-", card.firmware ?? "-", card.status, card.role ?? "-", card.last_seen_at ?? "-"])} />}
-        {tab === "pon" && <SimpleTable columns={["Puerto", "Tipo", "Admin", "Estado", "ONUs online", "ONUs total", "Carga", "Senal promedio", "Descripcion", "Rango", "Potencia TX"]} rows={ponPorts.data.map((port) => [port.interface_name ?? "-", port.pon_type ?? "GPON", port.admin_status ?? "unknown", port.oper_status ?? "unknown", port.online_onus ?? 0, port.total_onus ?? 0, `${port.load_percent ?? 0}%`, port.avg_rx_power ?? "-", port.description ?? "-", port.range_label ?? "-", port.tx_power ?? "-"])} />}
-        {tab === "uplinks" && <SimpleTable columns={["Puerto uplink", "Descripcion", "Tipo", "Admin", "Estado", "Negociacion", "MTU", "PVID untag", "Modo / VLANs etiquetados"]} rows={uplinks.data.map((uplink) => [uplink.interface_name, uplink.description ?? "-", uplink.interface_type ?? "-", uplink.admin_status, uplink.oper_status, uplink.negotiation ?? "-", uplink.mtu ?? "-", uplink.pvid_untag ?? "-", `${uplink.mode ?? "-"} ${uplink.allowed_vlans ?? ""}`])} />}
+        {tab === "cards" && (
+          <div className="space-y-3">
+            <Button variant="secondary" onClick={() => void runAction("cards")}>Sync Tarjetas Read-Only</Button>
+            <SimpleTable columns={["Ranura", "Tipo", "Tipo real", "Puertos", "SW", "Estado", "Rol", "Ultima actualizacion", "Origen"]} rows={cards.data.map((card) => [card.slot_number, card.card_type ?? "-", card.real_type ?? "-", card.port_count ?? "-", card.firmware ?? "-", card.status, card.role ?? "-", card.last_sync_at ?? card.last_seen_at ?? "-", card.sync_source ?? "-"])} />
+          </div>
+        )}
+        {tab === "pon" && (
+          <div className="space-y-3">
+            <Button variant="secondary" onClick={() => void runAction("pon")}>Sync PON Read-Only</Button>
+            <SimpleTable columns={["Puerto", "Tipo", "Admin", "Estado", "Online", "Offline", "Total", "Ocupacion", "Ultima sync", "Origen", "Senal promedio"]} rows={ponPorts.data.map((port) => [port.interface_name ?? "-", port.pon_type ?? "GPON", port.admin_status ?? "unknown", port.oper_status ?? "unknown", port.online_count ?? port.online_onus ?? 0, port.offline_count ?? 0, port.total_count ?? port.total_onus ?? 0, `${port.occupancy_percent ?? port.load_percent ?? 0}%`, port.last_sync_at ?? "-", port.sync_source ?? "-", port.avg_rx_power ?? "-"])} />
+          </div>
+        )}
+        {tab === "uplinks" && (
+          <div className="space-y-3">
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">Esta accion solo ejecuta show interface y no modifica la OLT.</div>
+            <Button variant="secondary" onClick={() => void runAction("uplinks")}>Sync Uplinks Read-Only</Button>
+            <SimpleTable columns={["Puerto uplink", "Descripcion", "Tipo", "Estado administrativo", "Estado", "Line protocol", "Velocidad", "MTU", "PVID untag", "Modo", "VLANs etiquetadas / permitidas", "Ultima actualizacion"]} rows={uplinks.data.map((uplink) => [uplink.interface_name, uplink.description ?? "-", uplink.interface_type ?? "-", uplink.admin_status, uplink.oper_status, uplink.line_protocol ?? "-", formatKbps(uplink.speed_kbps), uplink.mtu ?? "-", uplink.pvid_untag ?? "-", uplink.mode ?? "-", uplink.allowed_vlans ?? "-", uplink.last_seen_at ?? "-"])} />
+          </div>
+        )}
         {tab === "vlans" && <SimpleTable columns={["VLAN-ID", "Descripcion", "ONUs", "Usado IPTV", "Usado Gestion/VoIP", "DHCP Snooping", "LAN a LAN", "Estado"]} rows={vlans.data.map((vlan) => [vlan.vlan_id, vlan.description ?? vlan.name ?? "-", vlan.onu_count ?? 0, boolText(vlan.used_iptv), boolText(vlan.used_management_voip), boolText(vlan.dhcp_snooping), boolText(vlan.lan_to_lan), vlan.is_active ? "Activa" : "Inactiva"])} />}
         {tab === "advanced" && advanced.data && (
           <Panel className="p-4">
@@ -125,4 +164,17 @@ function SimpleTable({ columns, rows }: { columns: string[]; rows: Array<Array<s
 
 function boolText(value: unknown) {
   return value ? "Si" : "No";
+}
+
+function formatKbps(value?: number | null) {
+  if (!value) {
+    return "-";
+  }
+  if (value >= 1000000) {
+    return `${value / 1000000} Gbps`;
+  }
+  if (value >= 1000) {
+    return `${value / 1000} Mbps`;
+  }
+  return `${value} Kbps`;
 }

@@ -79,6 +79,7 @@ export type Vlan = {
   description?: string | null;
   service_type?: string;
   is_active?: boolean;
+  is_default_for_provisioning?: boolean;
   source?: string;
   notes?: string | null;
   onu_count?: number;
@@ -123,6 +124,7 @@ export type OnuType = {
   capability_mode: "bridging" | "routing" | "bridging_routing" | string;
   is_active: boolean;
   is_provisioning_allowed: boolean;
+  is_default_for_provisioning?: boolean;
   source: string;
   notes?: string | null;
 };
@@ -148,6 +150,7 @@ export type SpeedProfile = {
   technology: string;
   source: string;
   is_active: boolean;
+  is_default_for_provisioning?: boolean;
   notes?: string | null;
   created_at: string;
   updated_at: string;
@@ -229,6 +232,12 @@ export type PonPort = {
   oper_status?: string;
   tx_power?: number | null;
   range_label?: string | null;
+  online_count?: number;
+  offline_count?: number;
+  total_count?: number;
+  occupancy_percent?: number;
+  last_sync_at?: string | null;
+  sync_source?: string | null;
   online_onus?: number;
   total_onus?: number;
   load_percent?: number;
@@ -246,6 +255,8 @@ export type OltCard = {
   status: string;
   role?: string | null;
   last_seen_at?: string | null;
+  last_sync_at?: string | null;
+  sync_source?: string | null;
 };
 
 export type OltUplink = {
@@ -256,12 +267,16 @@ export type OltUplink = {
   interface_type?: string | null;
   admin_status: string;
   oper_status: string;
+  line_protocol: string;
   negotiation?: string | null;
+  speed_kbps?: number | null;
   mtu?: number | null;
   mode?: string | null;
   allowed_vlans?: string | null;
   pvid_untag?: number | null;
+  raw_output?: string | null;
   last_seen_at?: string | null;
+  sync_source?: string | null;
 };
 
 export type OltTechnicalSettings = {
@@ -309,6 +324,17 @@ export type Onu = {
   last_down_cause?: string | null;
   distance_m?: number | null;
   nap_port?: number | null;
+  raw_description?: string | null;
+  description_original?: string | null;
+  description_generated?: string | null;
+  zone_name?: string | null;
+  address_reference?: string | null;
+  nap_name?: string | null;
+  nap_port_label?: string | null;
+  odb_name?: string | null;
+  external_id?: string | null;
+  description_parse_status?: string | null;
+  description_parse_warnings?: string | null;
   import_source?: string | null;
 };
 
@@ -512,6 +538,23 @@ export type ProvisioningPlan = {
   pon_port_interface?: string | null;
   customer_name: string;
   customer_reference?: string | null;
+  onu_name?: string | null;
+  onu_description?: string | null;
+  description_original?: string | null;
+  description_generated?: string | null;
+  zone_name?: string | null;
+  address_reference?: string | null;
+  nap_name?: string | null;
+  nap_port_label?: string | null;
+  odb_name?: string | null;
+  external_id?: string | null;
+  description_parse_status?: string | null;
+  description_parse_warnings?: string[] | string | null;
+  onu_mode?: string;
+  vlan_lan_mode?: string;
+  ethernet_port?: string;
+  dhcp_mode?: string;
+  allow_manual_onu_id?: boolean;
   technical_comment?: string | null;
   address?: string | null;
   notes?: string | null;
@@ -532,7 +575,7 @@ export type ProvisioningPlan = {
   validation_errors: string[];
   validation_result?: ProvisioningValidationResult | null;
   validated_at?: string | null;
-  status: "draft" | "validated" | "validation_failed" | "approved" | "executed" | "cancelled" | string;
+  status: "draft" | "validated" | "validation_failed" | "approved" | "preflight_passed" | "preflight_failed" | "executed" | "cancelled" | string;
   created_at: string;
   updated_at: string;
 };
@@ -556,7 +599,16 @@ export type ProvisioningValidationResult = {
   selected_onu_id?: number | null;
   occupied_onu_ids: number[];
   cli_preview?: string | null;
+  preflight_checks?: Record<string, boolean>;
   validated_at: string;
+};
+
+export type ProvisioningPreflightResult = {
+  plan: ProvisioningPlan;
+  is_valid: boolean;
+  checks: Record<string, boolean>;
+  warnings: string[];
+  errors: string[];
 };
 
 export type DashboardEnvironmentSummary = {

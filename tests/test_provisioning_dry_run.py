@@ -2,9 +2,12 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app.models.base import Base
 from app.models.entities import (
+    DriverCommandLog,
     GponProfile,
     Nap,
     NapPort,
@@ -19,7 +22,8 @@ from app.models.entities import (
     Zone,
 )
 from app.schemas.entities import ProvisioningPlanCreate
-from app.services.provisioning_service import ProvisioningService
+from app.drivers.zte.c300_v125p3_telnet.parsers import CardInfo, OnuState
+from app.services.provisioning_service import ProvisioningPreflightService, ProvisioningService
 
 
 @pytest.fixture()
@@ -82,6 +86,8 @@ def catalog(db_session):
             *[NapPort(nap_id=nap.id, port_number=port, label=f"Puerto {port}", status="free") for port in range(1, 17)],
             pending,
             Vlan(olt_id=olt.id, vlan_id=200, name="FTTH-TH1", description="FTTH-TH1"),
+            Vlan(olt_id=olt.id, vlan_id=600, name="Troncal/Especial", description="Troncal/Especial"),
+            Vlan(olt_id=lab.id, vlan_id=600, name="LAB", description="LAB", is_active=False),
             GponProfile(olt_id=olt.id, profile_type="tcont", name="SMARTOLT-1G-UP", upstream_rate=None, downstream_rate=None),
             GponProfile(olt_id=olt.id, profile_type="traffic", name="SMARTOLT-1G-DOWN", upstream_rate=None, downstream_rate=None),
             ProfileCatalog(
@@ -129,7 +135,23 @@ def catalog(db_session):
                     "exit\n"
                     "interface {onu_interface}\n"
                     "name {customer_name_cli}\n"
+                    "description {description_generated}\n"
+                    "tcont 1 profile {speed_profile_up}\n"
+                    "gemport 1 unicast tcont 1 dir both\n"
+                    "gemport 1 traffic-limit downstream {speed_profile_down}\n"
+                    "switchport mode hybrid vport 1\n"
                     "switchport vlan {vlan} tag vport 1\n"
+                    "exit\n"
+                    "pon-onu-mng {onu_interface}\n"
+                    "loop-detect ethuni {ethernet_port} enable\n"
+                    "flow mode 1 tag-filter vid-filter untag-filter discard\n"
+                    "flow 1 priority 0 vid {vlan}\n"
+                    "gemport 1 flow 1\n"
+                    "switchport-bind switch_0/1 veip 1\n"
+                    "vlan port {ethernet_port} mode {vlan_lan_mode} vlan {vlan}\n"
+                    "dhcp-ip ethuni {ethernet_port} {dhcp_mode}\n"
+                    "security-mng 998 state enable mode permit ingress-type lan protocol web https\n"
+                    "security-mng 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069\n"
                     "exit"
                 ),
                 commands="",
@@ -160,25 +182,35 @@ def payload(
     zone_id: int,
     nap_id: int,
     nap_port: int = 14,
-    selected_onu_id: int | None = None,
+    selected_onu_id: int = 1,
     vlan: int = 200,
     speed_profile_up: str = "SMARTOLT-1G-UP",
     speed_profile_down: str = "SMARTOLT-1G-DOWN",
+    onu_type: str = "Prueba-vSol-no-usar",
+    upload_profile_id: int = 1,
+    download_profile_id: int = 2,
+    onu_name: str = "Cliente_Prueba",
+    onu_description: str = "$$$$zone_Zone_1_descr__extid_GPON00CBAC10_authd_20210124",
+    customer_name: str = "Cliente Prueba",
 ) -> ProvisioningPlanCreate:
     return ProvisioningPlanCreate(
         unauthorized_onu_id=pending_id,
-        customer_name="Cliente Prueba",
+        customer_name=customer_name,
         customer_reference="TEST-001",
+        onu_name=onu_name,
+        onu_description=onu_description,
         technical_comment="Dry run controlado",
         address="Direccion de prueba",
         notes="No ejecutar",
         zone_id=zone_id,
         nap_id=nap_id,
         nap_port=nap_port,
-        onu_type="VSOL",
+        onu_type=onu_type,
         vlan=vlan,
         speed_profile_up=speed_profile_up,
         speed_profile_down=speed_profile_down,
+        upload_profile_id=upload_profile_id,
+        download_profile_id=download_profile_id,
         selected_onu_id=selected_onu_id,
     )
 
@@ -234,7 +266,7 @@ def test_occupied_nap_port_generates_error(db_session, catalog):
     )
     db_session.commit()
 
-    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id))
+    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id, selected_onu_id=4))
     _, result = ProvisioningService(db_session).validate_and_update(plan.id)
 
     assert any("ya esta ocupado" in error for error in result.errors)
@@ -259,7 +291,7 @@ def test_registered_onu_in_same_olt_generates_error(db_session, catalog):
     )
     db_session.commit()
 
-    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id))
+    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id, selected_onu_id=4))
     _, result = ProvisioningService(db_session).validate_and_update(plan.id)
 
     assert any("ya esta registrada en esta OLT" in error for error in result.errors)
@@ -271,7 +303,9 @@ def test_dry_run_does_not_use_telnet_or_ssh(db_session, catalog, monkeypatch):
 
     monkeypatch.setattr("app.services.olt_service.OltService.driver_for", fail_if_driver_is_requested)
 
-    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id))
+    plan = ProvisioningService(db_session).create_plan(
+        payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id, selected_onu_id=4)
+    )
 
     assert plan.generated_cli
     assert "configure terminal" not in plan.generated_cli.lower()
@@ -297,7 +331,9 @@ def test_detects_next_available_onu_id(db_session, catalog):
         )
     db_session.commit()
 
-    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id))
+    plan = ProvisioningService(db_session).create_plan(
+        payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id, selected_onu_id=4)
+    )
     _, result = ProvisioningService(db_session).validate_and_update(plan.id)
 
     assert result.suggested_onu_id == 4
@@ -366,6 +402,8 @@ def test_invalid_vlan_profile_and_template_are_errors(db_session, catalog):
             vlan=999,
             speed_profile_up="NO-UP",
             speed_profile_down="NO-DOWN",
+            upload_profile_id=999,
+            download_profile_id=998,
         )
     )
     _, result = ProvisioningService(db_session).validate_and_update(plan.id)
@@ -411,3 +449,221 @@ def test_duplicate_serial_in_production_is_error(db_session, catalog):
     _, result = ProvisioningService(db_session).validate_and_update(plan.id)
 
     assert any("otra OLT de produccion" in error for error in result.errors)
+
+
+def test_create_plan_without_vlan_fails_validation(catalog):
+    with pytest.raises(ValidationError):
+        ProvisioningPlanCreate(
+            unauthorized_onu_id=catalog["pending"].id,
+            customer_name="Cliente",
+            onu_name="ONU",
+            onu_description="desc",
+            zone_id=catalog["zone"].id,
+            nap_id=catalog["nap"].id,
+            nap_port=1,
+            onu_type="Prueba-vSol-no-usar",
+            vlan=0,
+            upload_profile_id=1,
+            download_profile_id=2,
+            selected_onu_id=1,
+        )
+
+
+def test_create_plan_without_onu_type_fails_validation(catalog):
+    with pytest.raises(ValidationError):
+        payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id, onu_type="   ")
+
+
+def test_create_plan_without_upload_profile_fails_validation(catalog):
+    with pytest.raises(ValidationError):
+        ProvisioningPlanCreate(
+            unauthorized_onu_id=catalog["pending"].id,
+            customer_name="Cliente",
+            onu_name="ONU",
+            onu_description="desc",
+            zone_id=catalog["zone"].id,
+            nap_id=catalog["nap"].id,
+            nap_port=1,
+            onu_type="Prueba-vSol-no-usar",
+            vlan=600,
+            download_profile_id=2,
+            selected_onu_id=1,
+        )
+
+
+def test_create_plan_without_download_profile_fails_validation(catalog):
+    with pytest.raises(ValidationError):
+        ProvisioningPlanCreate(
+            unauthorized_onu_id=catalog["pending"].id,
+            customer_name="Cliente",
+            onu_name="ONU",
+            onu_description="desc",
+            zone_id=catalog["zone"].id,
+            nap_id=catalog["nap"].id,
+            nap_port=1,
+            onu_type="Prueba-vSol-no-usar",
+            vlan=600,
+            upload_profile_id=1,
+            selected_onu_id=1,
+        )
+
+
+def test_vlan_selector_data_filters_by_olt_and_active(db_session, catalog):
+    visible_vlans = db_session.scalars(
+        select(Vlan).where(Vlan.olt_id == catalog["olt"].id, Vlan.is_active.is_(True)).order_by(Vlan.vlan_id)
+    ).all()
+
+    assert [vlan.vlan_id for vlan in visible_vlans] == [200, 600]
+    assert all(vlan.olt_id == catalog["olt"].id for vlan in visible_vlans)
+
+
+def test_gpon00cbac10_generates_real_zte_cli_with_vlan_600(db_session, catalog):
+    plan = ProvisioningService(db_session).create_plan(
+        payload(
+            catalog["pending"].id,
+            catalog["zone"].id,
+            catalog["nap"].id,
+            nap_port=2,
+            selected_onu_id=1,
+            vlan=600,
+            customer_name="TR Camacho FO",
+            onu_description="$$$$zone_Zone_1_descr__extid_GPON00CBAC10_authd_20210124",
+        )
+    )
+
+    expected = """interface gpon-olt_1/2/15
+onu 1 type Prueba-vSol-no-usar sn GPON00CBAC10
+exit
+interface gpon-onu_1/2/15:1
+name TR_Camacho_FO
+description $$$$zone_Zone_1_descr__extid_GPON00CBAC10_authd_20210124
+tcont 1 profile SMARTOLT-1G-UP
+gemport 1 unicast tcont 1 dir both
+gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN
+switchport mode hybrid vport 1
+switchport vlan 600 tag vport 1
+exit
+pon-onu-mng gpon-onu_1/2/15:1
+loop-detect ethuni eth_0/1 enable
+flow mode 1 tag-filter vid-filter untag-filter discard
+flow 1 priority 0 vid 600
+gemport 1 flow 1
+switchport-bind switch_0/1 veip 1
+vlan port eth_0/1 mode tag vlan 600
+dhcp-ip ethuni eth_0/1 from-internet
+security-mng 998 state enable mode permit ingress-type lan protocol web https
+security-mng 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069
+exit"""
+
+    assert plan.generated_cli == expected
+    assert "type Prueba-vSol-no-usar sn GPON00CBAC10" in plan.generated_cli
+    assert "switchport vlan 600 tag vport 1" in plan.generated_cli
+    assert "SMARTOLT-1G-UP" in plan.generated_cli
+    assert "SMARTOLT-1G-DOWN" in plan.generated_cli
+    assert "pon-onu-mng gpon-onu_1/2/15:1" in plan.generated_cli
+
+
+def test_nap_port_is_optional_and_cli_keeps_management_block(db_session, catalog):
+    plan = ProvisioningService(db_session).create_plan(
+        payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id, nap_port=None, selected_onu_id=1, vlan=600)
+    )
+    _, result = ProvisioningService(db_session).validate_and_update(plan.id)
+
+    assert result.errors == []
+    assert plan.nap_port is None
+    assert "pon-onu-mng gpon-onu_1/2/15:1" in plan.generated_cli
+    assert "vlan port eth_0/1 mode tag vlan 600" in plan.generated_cli
+    assert "dhcp-ip ethuni eth_0/1 from-internet" in plan.generated_cli
+
+
+class FakePreflightDriver:
+    def __init__(self, state_onu_id: int | None = None, uncfg_serial: str = "GPON00CBAC10"):
+        self.commands: list[str] = []
+        self.connected = False
+        self.state_onu_id = state_onu_id
+        self.uncfg_serial = uncfg_serial
+
+    def connect(self, disable_paging=True):
+        self.connected = True
+
+    def disconnect(self):
+        self.connected = False
+
+    def execute(self, command: str, read_only: bool = True):
+        self.commands.append(command)
+        assert read_only is True
+        assert command == "show version-running"
+        return "ZXA10 C300 Software Version V1.2.5P3"
+
+    def show_card(self):
+        self.commands.append("show card")
+        return [CardInfo(slot="1/1/2", card_type="GTGHG", status="online", real_type="GTGHG", firmware="V1.2.5P3", ports=16)]
+
+    def show_uncfg_raw(self):
+        self.commands.append("show gpon onu uncfg")
+        return f"gpon-onu_1/2/15:1        {self.uncfg_serial}        VSOL"
+
+    def show_onu_state(self):
+        self.commands.append("show gpon onu state")
+        if self.state_onu_id is None:
+            return []
+        return [OnuState(f"gpon-onu_1/2/15:{self.state_onu_id}", "ZTEGOCCUPIED", "online", "working", None)]
+
+
+def approved_plan(db_session, catalog):
+    service = ProvisioningService(db_session)
+    plan = service.create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id, selected_onu_id=1))
+    return service.approve(plan.id)
+
+
+def test_preflight_passes_for_approved_plan_and_logs_read_only_commands(db_session, catalog, monkeypatch):
+    plan = approved_plan(db_session, catalog)
+    driver = FakePreflightDriver()
+    monkeypatch.setattr("app.services.olt_service.OltService.driver_for", lambda *_args, **_kwargs: driver)
+
+    plan, result = ProvisioningPreflightService(db_session).run(plan.id)
+
+    assert result["is_valid"] is True
+    assert plan.status == "preflight_passed"
+    assert result["checks"] == {
+        "olt_accessible": True,
+        "card_exists": True,
+        "pon_exists": True,
+        "onu_detected": True,
+        "serial_detected": True,
+        "onu_id_available": True,
+        "vlan_exists": True,
+        "upload_profile_exists": True,
+        "download_profile_exists": True,
+        "onu_type_exists": True,
+    }
+    assert driver.commands == ["show version-running", "show card", "show gpon onu uncfg", "show gpon onu state"]
+    logs = db_session.scalars(select(DriverCommandLog).where(DriverCommandLog.olt_id == catalog["olt"].id)).all()
+    assert [log.command for log in logs] == driver.commands
+    assert all(log.read_only is True for log in logs)
+
+
+def test_preflight_detects_occupied_onu_id(db_session, catalog, monkeypatch):
+    plan = approved_plan(db_session, catalog)
+    driver = FakePreflightDriver(state_onu_id=1)
+    monkeypatch.setattr("app.services.olt_service.OltService.driver_for", lambda *_args, **_kwargs: driver)
+
+    plan, result = ProvisioningPreflightService(db_session).run(plan.id)
+
+    assert result["is_valid"] is False
+    assert plan.status == "preflight_failed"
+    assert result["checks"]["onu_id_available"] is False
+    assert any("ONU ID 1" in error for error in result["errors"])
+
+
+def test_preflight_requires_approved_plan(db_session, catalog, monkeypatch):
+    plan = ProvisioningService(db_session).create_plan(payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id))
+
+    def fail_if_driver_is_requested(*_args, **_kwargs):
+        raise AssertionError("Preflight must not connect unless plan is approved")
+
+    monkeypatch.setattr("app.services.olt_service.OltService.driver_for", fail_if_driver_is_requested)
+
+    with pytest.raises(HTTPException) as exc:
+        ProvisioningPreflightService(db_session).run(plan.id)
+    assert "approved" in exc.value.detail
