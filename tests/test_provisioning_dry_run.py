@@ -24,7 +24,9 @@ from app.models.entities import (
 )
 from app.schemas.entities import ProvisioningPlanCreate
 from app.drivers.zte.c300_v125p3_telnet.parsers import CardInfo, OnuState
+from app.drivers.zte.c300_v125p3_telnet.driver import PROMPT_PATTERN
 from app.services.provisioning_service import ProvisioningPreflightService, ProvisioningService
+from app.services.provisioning_execution_service import ProvisioningExecutionService
 
 
 @pytest.fixture()
@@ -744,3 +746,128 @@ def test_preflight_requires_approved_plan(db_session, catalog, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         ProvisioningPreflightService(db_session).run(plan.id)
     assert "approved" in exc.value.detail
+
+
+class FakeExecutionDriver:
+    def __init__(self, fail_on: str | None = None):
+        self.commands: list[tuple[str, bool]] = []
+        self.fail_on = fail_on
+
+    def connect(self, disable_paging=True):
+        assert disable_paging is False
+
+    def disconnect(self, send_exit=True):
+        assert send_exit is False
+
+    def execute(self, command: str, read_only: bool = True):
+        self.commands.append((command, read_only))
+        if self.fail_on and command == self.fail_on:
+            return "% Invalid input"
+        if command == "show gpon onu state":
+            return "gpon-onu_1/2/15:1 enable enable working"
+        if command.startswith("show pon power onu-rx"):
+            return "gpon-onu_1/2/15:1 -20.50 dBm"
+        if command.startswith("show pon power onu-tx"):
+            return "gpon-onu_1/2/15:1 2.10 dBm"
+        return "FTTH-PCM-ZTE1(config)#"
+
+
+def execution_ready_plan(db_session, catalog):
+    plan = ProvisioningService(db_session).create_plan(
+        payload(catalog["pending"].id, catalog["zone"].id, catalog["nap"].id, selected_onu_id=1)
+    )
+    plan.status = "preflight_passed"
+    db_session.commit()
+    return plan
+
+
+def test_controlled_execution_marks_executed_only_after_state_and_power(db_session, catalog, monkeypatch):
+    plan = execution_ready_plan(db_session, catalog)
+    driver = FakeExecutionDriver()
+    monkeypatch.setattr("app.services.olt_service.OltService.driver_for", lambda *_args, **_kwargs: driver)
+    monkeypatch.setattr("app.services.provisioning_execution_service.sleep", lambda _seconds: None)
+
+    result = ProvisioningExecutionService(db_session).execute(plan.id)
+
+    assert result["status"] == "executed"
+    assert result["rx_power"] == -20.5
+    assert result["tx_power"] == 2.1
+    assert db_session.get(ProvisioningPlan, plan.id).status == "executed"
+    managed_onu = db_session.scalar(select(Onu).where(Onu.olt_id == plan.olt_id, Onu.serial_number == plan.serial_number))
+    assert managed_onu is not None
+    assert managed_onu.onu_interface == "gpon-onu_1/2/15:1"
+    assert managed_onu.rx_power == -20.5
+    assert db_session.get(UnauthorizedOnu, plan.unauthorized_onu_id).status == "provisioned"
+    assert all(command.lower() not in {"write", "save"} for command, _ in driver.commands)
+    assert driver.commands[-3:] == [
+        ("show gpon onu state", True),
+        ("show pon power onu-rx gpon-onu_1/2/15:1", True),
+        ("show pon power onu-tx gpon-onu_1/2/15:1", True),
+    ]
+
+
+def test_controlled_execution_stops_on_first_cli_error(db_session, catalog, monkeypatch):
+    plan = execution_ready_plan(db_session, catalog)
+    fail_on = "interface gpon-onu_1/2/15:1"
+    driver = FakeExecutionDriver(fail_on=fail_on)
+    monkeypatch.setattr("app.services.olt_service.OltService.driver_for", lambda *_args, **_kwargs: driver)
+
+    with pytest.raises(HTTPException):
+        ProvisioningExecutionService(db_session).execute(plan.id)
+
+    assert db_session.get(ProvisioningPlan, plan.id).status == "preflight_passed"
+    assert driver.commands[-1][0] == fail_on
+    assert not any(command.startswith("show ") for command, _ in driver.commands)
+
+
+def test_executed_plan_cannot_be_executed_again(db_session, catalog, monkeypatch):
+    plan = execution_ready_plan(db_session, catalog)
+    plan.status = "executed"
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.olt_service.OltService.driver_for",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Driver must not be created")),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        ProvisioningExecutionService(db_session).execute(plan.id)
+
+    assert exc.value.status_code == 409
+    assert "ya fue ejecutado" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        b"FTTH-PCM-ZTE1(config-gpon-onu-mng)#",
+        b"FTTH-PCM-ZTE1(gpon-onu-mng)#",
+        b"FTTH-PCM-ZTE1(config)#",
+        b"FTTH-PCM-ZTE1(config-if)#",
+        b"FTTH-PCM-ZTE1#",
+    ],
+)
+def test_driver_accepts_zte_management_prompt_variants(prompt):
+    assert PROMPT_PATTERN.search(prompt)
+
+
+def test_resume_management_does_not_repeat_base_commands(db_session, catalog, monkeypatch):
+    plan = execution_ready_plan(db_session, catalog)
+    driver = FakeExecutionDriver()
+    monkeypatch.setattr("app.services.olt_service.OltService.driver_for", lambda *_args, **_kwargs: driver)
+    monkeypatch.setattr("app.services.provisioning_execution_service.sleep", lambda _seconds: None)
+
+    result = ProvisioningExecutionService(db_session).resume_management(plan.id)
+    sent = [command for command, _ in driver.commands]
+
+    assert result["status"] == "executed"
+    assert sent[0] == "configure terminal"
+    assert "pon-onu-mng gpon-onu_1/2/15:1" in sent
+    assert "interface gpon-olt_1/2/15" not in sent
+    assert "onu 1 type Prueba-vSol-no-usar sn GPON00CBAC10" not in sent
+    assert "interface gpon-onu_1/2/15:1" not in sent
+    assert sent[-3:] == [
+        "show gpon onu state",
+        "show pon power onu-rx gpon-onu_1/2/15:1",
+        "show pon power onu-tx gpon-onu_1/2/15:1",
+    ]

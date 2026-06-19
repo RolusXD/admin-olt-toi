@@ -54,7 +54,9 @@ READ_ONLY_COMMAND_PATTERNS = (
     re.compile(r"^show interface(?:\s+(?:brief|gei|xgei|gei_\d+/\d+/\d+(?::\d+)?|xgei_\d+/\d+/\d+(?::\d+)?))?$", re.I),
     re.compile(r"^show vlan(?:\s+brief)?$", re.I),
 )
-PROMPT_PATTERN = re.compile(rb"(?m)(?:[\w.-]+)(?:\(config[^\)]*\))?#\s*$")
+# ZTE changes the parenthesized context name depending on firmware and command,
+# for example (config-if), (config-gpon-onu-mng) or (gpon-onu-mng).
+PROMPT_PATTERN = re.compile(rb"(?m)(?:[\w.-]+)(?:\([^\r\n#\)]*\))?#\s*$")
 
 
 @dataclass
@@ -86,10 +88,11 @@ class ZteC300V125P3TelnetDriver(DeviceDriver):
         if disable_paging:
             self.execute("terminal length 0", read_only=False)
 
-    def disconnect(self) -> None:
+    def disconnect(self, send_exit: bool = True) -> None:
         if self.transport:
             try:
-                self.transport.write_line("exit")
+                if send_exit:
+                    self.transport.write_line("exit")
             except Exception:
                 pass
             finally:

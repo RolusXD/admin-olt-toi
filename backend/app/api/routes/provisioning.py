@@ -10,6 +10,7 @@ from app.schemas.entities import (
     ProvisioningValidationResultRead,
 )
 from app.services.provisioning_service import ProvisioningPreflightService, ProvisioningService, plan_to_dict, validation_result_to_dict
+from app.services.provisioning_execution_service import ProvisioningExecutionService
 
 router = APIRouter(tags=["provisioning"])
 
@@ -79,6 +80,16 @@ def approve_provisioning_plan(plan_id: int, db: DbSession) -> dict:
 def preflight_provisioning_plan(plan_id: int, db: DbSession) -> dict:
     plan, result = ProvisioningPreflightService(db).run(plan_id)
     return {"plan": plan_to_dict(plan), **result}
+
+
+@router.post("/provisioning-plans/{plan_id}/execute")
+def execute_provisioning_plan(plan_id: int, db: DbSession) -> dict:
+    return ProvisioningExecutionService(db).execute(plan_id)
+
+
+@router.post("/provisioning-plans/{plan_id}/resume-management")
+def resume_provisioning_management(plan_id: int, db: DbSession) -> dict:
+    return ProvisioningExecutionService(db).resume_management(plan_id)
 
 
 @router.put("/provisioning-plans/{plan_id}/cancel", response_model=ProvisioningPlanRead)

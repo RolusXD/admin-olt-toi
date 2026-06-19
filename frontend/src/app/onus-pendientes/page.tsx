@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { CheckCircle2, EyeOff, Filter, Play, RefreshCcw, RotateCcw, Search } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
@@ -40,8 +40,11 @@ export default function PendingOnusPage() {
   const [selectedOltId, setSelectedOltId] = useState("");
   const [showLab, setShowLab] = useState(false);
   const [discoveryResult, setDiscoveryResult] = useState<UnauthorizedOnuDiscoveryResult | null>(null);
+  const [isAutoDiscovering, setIsAutoDiscovering] = useState(false);
+  const [isManualDiscovering, setIsManualDiscovering] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const autoDiscoveryStarted = useRef(false);
 
   const selectedOlt = useMemo(
     () => olts.data.find((olt) => String(olt.id) === selectedOltId) ?? olts.data[0] ?? null,
@@ -49,25 +52,22 @@ export default function PendingOnusPage() {
   );
 
   useEffect(() => {
-    if (!selectedOlt || discoveryResult || loading) return;
-    let cancelled = false;
-    setLoading("auto-discover");
-    api.discoverUnauthorizedOnus(selectedOlt.id)
+    if (!selectedOlt || autoDiscoveryStarted.current) return;
+    autoDiscoveryStarted.current = true;
+    setError(null);
+    setIsAutoDiscovering(true);
+
+    void api
+      .discoverUnauthorizedOnus(selectedOlt.id)
       .then(async (result) => {
-        if (cancelled) return;
         setDiscoveryResult(result);
         pending.setData(await api.unauthorizedOnus(query));
       })
       .catch((exc) => {
-        if (!cancelled) setError(exc instanceof Error ? exc.message : "No se pudo ejecutar Discovery");
+        setError(exc instanceof Error ? exc.message : "No se pudo ejecutar Discovery automatico");
       })
-      .finally(() => {
-        if (!cancelled) setLoading(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedOlt?.id, discoveryResult, loading, query]);
+      .finally(() => setIsAutoDiscovering(false));
+  }, [selectedOlt?.id]);
 
   function updateFilter(field: keyof Filters, value: string) {
     setFilters((current) => ({ ...current, [field]: value }));
@@ -90,7 +90,7 @@ export default function PendingOnusPage() {
   async function discover() {
     if (!selectedOlt) return;
     setError(null);
-    setLoading("discover");
+    setIsManualDiscovering(true);
     try {
       const result = await api.discoverUnauthorizedOnus(selectedOlt.id);
       setDiscoveryResult(result);
@@ -98,7 +98,7 @@ export default function PendingOnusPage() {
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "No se pudo ejecutar Discovery");
     } finally {
-      setLoading(null);
+      setIsManualDiscovering(false);
     }
   }
 
@@ -159,13 +159,15 @@ export default function PendingOnusPage() {
             </label>
             <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
               Discovery solo ejecuta show gpon onu uncfg. No autoriza ONUs, no entra a configure terminal y no modifica la OLT.
-              Al entrar se ejecuta en segundo plano para refrescar la bandeja.
+              Se ejecuta automaticamente una vez al ingresar y puede repetirse manualmente.
             </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-3">
-            <Button type="button" onClick={discover} disabled={!selectedOlt || loading !== null}>
+            <Button type="button" onClick={discover} disabled={!selectedOlt || isAutoDiscovering || isManualDiscovering}>
               <Search className="h-4 w-4" /> Ejecutar Discovery Read-Only
             </Button>
+            {isAutoDiscovering && <span className="text-sm text-slate-700">Discovery automatico en ejecucion...</span>}
+            {isManualDiscovering && <span className="text-sm text-slate-700">Ejecutando discovery manual...</span>}
             {discoveryResult && (
               <span className="text-sm text-slate-700">
                 Detectadas {discoveryResult.detected}, nuevas {discoveryResult.new}, existentes {discoveryResult.existing}, ignoradas{" "}
