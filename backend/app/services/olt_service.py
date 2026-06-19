@@ -23,7 +23,8 @@ class OltService:
         data["olt_code"] = self._normalize_olt_code(data["olt_code"])
         data["environment"] = self._normalize_environment(data.get("environment", "production"))
         self._ensure_unique_olt_code(data["olt_code"])
-        data.setdefault("initial_import_status", "pending")
+        self._ensure_unique_confirmed_endpoint(data["ip_address"], data.get("vendor", "ZTE"), data["environment"])
+        data.setdefault("initial_import_status", "draft")
         if snmp_ro and snmp_ro.strip():
             data["snmp_ro_community_encrypted"] = encrypt_secret(snmp_ro)
         if snmp_rw and snmp_rw.strip():
@@ -77,6 +78,18 @@ class OltService:
             statement = statement.where(Olt.id != exclude_id)
         if self.db.scalar(statement):
             raise ValueError("olt_code already exists")
+
+    def _ensure_unique_confirmed_endpoint(self, ip_address: str, vendor: str, environment: str) -> None:
+        existing = self.db.scalar(
+            select(Olt).where(
+                Olt.ip_address == ip_address.strip(),
+                Olt.vendor.ilike(vendor.strip()),
+                Olt.environment == environment,
+                Olt.initial_import_status == "confirmed",
+            )
+        )
+        if existing:
+            raise ValueError(f"Ya existe una OLT confirmada con esta IP, vendor y entorno: {existing.olt_code}")
 
     def driver_for(self, olt: Olt) -> ZteC300V125P3TelnetDriver:
         return ZteC300V125P3TelnetDriver(

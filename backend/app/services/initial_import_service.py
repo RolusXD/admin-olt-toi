@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 import json
+import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ from app.models.entities import (
     Nap,
     NapPort,
     Olt,
+    OltCard,
     OltTechnicalSettings,
     OltUplink,
     Onu,
@@ -28,6 +30,10 @@ from app.models.entities import (
     Zone,
 )
 from app.services.event_service import EventService
+
+
+class ImportCriticalError(ValueError):
+    pass
 
 
 class InitialImportService:
@@ -45,7 +51,7 @@ class InitialImportService:
         olt = self._get_olt_or_error(olt_id)
         try:
             parsed = parse_running_config(raw_config)
-            summary = self._preview_summary(parsed)
+            summary = self._preview_summary(parsed, olt.id)
 
             snapshot = ConfigSnapshot(olt_id=olt.id, raw_config=raw_config, source_command="show running-config")
             self.db.add(snapshot)
@@ -125,6 +131,11 @@ class InitialImportService:
             raise ValueError("Config snapshot not found")
 
         parsed = parse_running_config(snapshot.raw_config)
+        if parsed.critical_errors:
+            job.status = "failed"
+            olt.initial_import_status = "failed"
+            self.db.commit()
+            raise ImportCriticalError("La importacion contiene errores criticos: " + "; ".join(parsed.critical_errors))
         counters = {
             "vlans_upserted": 0,
             "gpon_profiles_upserted": 0,
@@ -154,6 +165,10 @@ class InitialImportService:
         for pon_port in parsed.pon_ports:
             self._upsert_pon_port(olt.id, pon_port)
             counters["pon_ports_upserted"] += 1
+        parsed_pon_names = {port.interface_name for port in parsed.pon_ports}
+        for interface_name in sorted(self._physical_pon_interfaces(olt.id) - parsed_pon_names):
+            self._ensure_physical_pon_port(olt.id, interface_name)
+            counters["pon_ports_upserted"] += 1
         for uplink in parsed.uplinks:
             self._upsert_uplink(olt.id, uplink)
             counters["uplinks_upserted"] += 1
@@ -173,8 +188,8 @@ class InitialImportService:
             if pending:
                 pending.suggested_service_mode_code = historical_mode.mode_code
         for onu in parsed.onus:
-            zone, zone_created = self._ensure_zone(onu.parsed_zone_name)
-            nap, nap_created = self._ensure_nap(zone, onu.parsed_nap_name)
+            zone, zone_created = self._ensure_zone(olt, onu.parsed_zone_name)
+            nap, nap_created = self._ensure_nap(olt, zone, onu.parsed_nap_name)
             counters["zones_upserted"] += 1 if zone_created else 0
             counters["naps_upserted"] += 1 if nap_created else 0
             persisted = self._upsert_onu(
@@ -198,7 +213,7 @@ class InitialImportService:
         self.db.commit()
         return {"import_job_id": job.id, "status": job.status, **counters}
 
-    def _preview_summary(self, parsed) -> dict:
+    def _preview_summary(self, parsed, olt_id: int) -> dict:
         base = parsed.summary()
         return {
             "vlans": base["vlans"],
@@ -206,13 +221,15 @@ class InitialImportService:
             "traffic_profiles": sum(1 for profile in parsed.gpon_profiles if profile.profile_type == "traffic"),
             "gpon_profiles": base["gpon_profiles"],
             "onu_types": base["onu_types"],
-            "pon_ports": base["pon_ports"],
+            "pon_ports": len({port.interface_name for port in parsed.pon_ports} | self._physical_pon_interfaces(olt_id)),
             "uplinks": base.get("uplinks", 0),
             "onus": base["onus"],
             "onu_management_modes": base.get("onu_management_modes", 0),
             "zones_detected": base["zones_detected"],
             "naps_detected": base["naps_detected"],
             "warnings": base["warnings"],
+            "legacy_incomplete": base.get("legacy_incomplete", []),
+            "critical_errors": base.get("critical_errors", []),
         }
 
     def _get_olt_or_error(self, olt_id: int) -> Olt:
@@ -337,6 +354,47 @@ class InitialImportService:
         pon.pon_type = "GPON"
         return pon
 
+    def _physical_pon_interfaces(self, olt_id: int) -> set[str]:
+        interfaces: set[str] = set()
+        cards = self.db.scalars(select(OltCard).where(OltCard.olt_id == olt_id)).all()
+        for card in cards:
+            card_type = (card.card_type or card.real_type or "").upper()
+            if not card_type.startswith(("GTGH", "GTGO")):
+                continue
+            parts = [int(part) for part in card.slot_number.split("/") if part.isdigit()]
+            rack = parts[0] if parts else 1
+            slot = parts[-1] if parts else 0
+            for port in range(1, (card.port_count or 0) + 1):
+                interfaces.add(f"gpon-olt_{rack}/{slot}/{port}")
+        return interfaces
+
+    def _ensure_physical_pon_port(self, olt_id: int, interface_name: str) -> PonPort:
+        existing = self.db.scalar(select(PonPort).where(PonPort.olt_id == olt_id, PonPort.interface_name == interface_name))
+        if existing:
+            return existing
+        match = re.fullmatch(r"gpon-olt_(\d+)/(\d+)/(\d+)", interface_name)
+        if not match:
+            raise ValueError(f"Invalid physical PON interface {interface_name}")
+        rack, slot, port = (int(value) for value in match.groups())
+        pon = PonPort(
+            olt_id=olt_id,
+            rack=rack,
+            shelf=0,
+            slot=slot,
+            port=port,
+            interface_name=interface_name,
+            pon_type="GPON",
+            admin_status="unknown",
+            oper_status="empty",
+            online_count=0,
+            offline_count=0,
+            total_count=0,
+            occupancy_percent=0,
+            sync_source="Telnet Read-Only",
+        )
+        self.db.add(pon)
+        return pon
+
     def _upsert_uplink(self, olt_id: int, parsed) -> OltUplink:
         uplink = self.db.scalar(select(OltUplink).where(OltUplink.olt_id == olt_id, OltUplink.interface_name == parsed.interface_name))
         if not uplink:
@@ -361,13 +419,13 @@ class InitialImportService:
             self.db.add(settings)
         return settings
 
-    def _ensure_zone(self, name: str | None) -> tuple[Zone | None, bool]:
+    def _ensure_zone(self, olt: Olt, name: str | None) -> tuple[Zone | None, bool]:
         if not name:
             return None, False
-        zone = self.db.scalar(select(Zone).where(Zone.name == name))
+        zone = self.db.scalar(select(Zone).where(Zone.olt_id == olt.id, Zone.name == name))
         if zone:
             return zone, False
-        zone = Zone(name=name, description="Detectada por importacion inicial OLT")
+        zone = Zone(olt_id=olt.id, olt_code_snapshot=olt.olt_code, name=name, description="Detectada por importacion inicial OLT")
         zone.code = name
         zone.source = "imported"
         zone.is_active = True
@@ -375,17 +433,17 @@ class InitialImportService:
         self.db.flush()
         return zone, True
 
-    def _ensure_nap(self, zone: Zone | None, name: str | None) -> tuple[Nap | None, bool]:
+    def _ensure_nap(self, olt: Olt, zone: Zone | None, name: str | None) -> tuple[Nap | None, bool]:
         if not zone or not name:
             return None, False
-        nap = self.db.scalar(select(Nap).where(Nap.zone_id == zone.id, Nap.name == name))
+        nap = self.db.scalar(select(Nap).where(Nap.olt_id == olt.id, Nap.zone_id == zone.id, Nap.name == name))
         if nap:
-            self._ensure_nap_ports(nap)
+            self._ensure_nap_ports(olt, nap)
             return nap, False
-        nap = Nap(zone_id=zone.id, name=name, code=name, capacity=16, description="Detectada por importacion inicial OLT", source="imported", is_active=True)
+        nap = Nap(olt_id=olt.id, olt_code_snapshot=olt.olt_code, zone_id=zone.id, name=name, code=name, capacity=16, description="Detectada por importacion inicial OLT", source="imported", is_active=True)
         self.db.add(nap)
         self.db.flush()
-        self._ensure_nap_ports(nap)
+        self._ensure_nap_ports(olt, nap)
         return nap, True
 
     def _upsert_onu(
@@ -446,6 +504,8 @@ class InitialImportService:
         onu.external_id = parsed.external_id or parsed.serial_number
         onu.description_parse_status = parsed.description_parse_status
         onu.description_parse_warnings = json.dumps(parsed.description_parse_warnings, ensure_ascii=True)
+        if parsed.description_parse_status in {"partial", "unknown"} and not onu.technician_notes:
+            onu.technician_notes = parsed.raw_description
         onu.service_mode_code = service_mode_code if service_mode_code != "unknown" else onu.service_mode_code
         onu.source = "cli_import"
         onu.import_source = self.IMPORT_SOURCE_BY_JOB_SOURCE.get(job.source, "manual")
@@ -559,7 +619,7 @@ class InitialImportService:
                 return name[: -len(suffix)]
         return name
 
-    def _ensure_nap_ports(self, nap: Nap) -> None:
+    def _ensure_nap_ports(self, olt: Olt, nap: Nap) -> None:
         existing = set(self.db.scalars(select(NapPort.port_number).where(NapPort.nap_id == nap.id)))
         pending = {
             item.port_number
@@ -570,13 +630,16 @@ class InitialImportService:
         created = False
         for port_number in range(1, (nap.capacity or 16) + 1):
             if port_number not in existing:
-                self.db.add(NapPort(nap_id=nap.id, port_number=port_number, label=f"Puerto {port_number}", status="free"))
+                self.db.add(NapPort(olt_id=olt.id, olt_code_snapshot=olt.olt_code, nap_id=nap.id, port_number=port_number, label=f"Puerto {port_number}", status="free"))
                 created = True
         if created:
             self.db.flush()
 
     def _occupy_nap_port(self, nap: Nap, onu: Onu) -> None:
-        self._ensure_nap_ports(nap)
+        olt = self.db.get(Olt, onu.olt_id)
+        if not olt:
+            return
+        self._ensure_nap_ports(olt, nap)
         port = self.db.scalar(select(NapPort).where(NapPort.nap_id == nap.id, NapPort.port_number == onu.nap_port))
         if not port:
             port = next(
@@ -588,7 +651,7 @@ class InitialImportService:
                 None,
             )
         if not port:
-            port = NapPort(nap_id=nap.id, port_number=onu.nap_port, label=f"Puerto {onu.nap_port}")
+            port = NapPort(olt_id=olt.id, olt_code_snapshot=olt.olt_code, nap_id=nap.id, port_number=onu.nap_port, label=f"Puerto {onu.nap_port}")
             self.db.add(port)
             self.db.flush()
         port.status = "occupied"

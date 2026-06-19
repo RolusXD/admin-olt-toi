@@ -15,6 +15,7 @@ from app.models.entities import (
     Nap,
     NapPort,
     Olt,
+    OltCard,
     OltTechnicalSettings,
     OltUplink,
     Onu,
@@ -29,7 +30,7 @@ from app.models.entities import (
 from app.api.routes.onus import list_onus
 from app.schemas.entities import OltCreate
 from app.schemas.entities import OnuRead
-from app.services.initial_import_service import InitialImportService
+from app.services.initial_import_service import ImportCriticalError, InitialImportService
 from app.services.olt_service import OltService
 from app.services.provisioning_service import ProvisioningService
 
@@ -100,7 +101,11 @@ def test_preview_from_text_does_not_create_productive_records(db_session, olt, r
     assert result["pon_ports"] == 16
     assert result["onus"] == 557
     assert "Lagunas" in result["zones_detected"]
+    assert result["zones_detected"] == ["Lagunas", "SIN_ZONA", "Zone_1"]
     assert "C1" in result["naps_detected"]
+    assert result["critical_errors"] == []
+    assert len(result["warnings"]) <= 10
+    assert len(result["legacy_incomplete"]) > 500
     assert scalar_count(db_session, ConfigSnapshot) == 1
     assert scalar_count(db_session, ImportJob) == 1
     assert scalar_count(db_session, Onu) == 0
@@ -110,6 +115,50 @@ def test_preview_from_text_does_not_create_productive_records(db_session, olt, r
     assert job.source == "text"
     db_session.refresh(olt)
     assert olt.initial_import_status == "preview_created"
+
+
+def test_card_inventory_completes_all_sixteen_physical_pon_ports(db_session, olt):
+    db_session.add(
+        OltCard(
+            olt_id=olt.id,
+            slot_number="1/0/2",
+            card_type="GTGHG",
+            real_type="GTGHG",
+            port_count=16,
+            status="INSERVICE",
+            sync_source="Telnet Read-Only",
+        )
+    )
+    db_session.commit()
+    raw = "interface gpon-olt_1/2/1\nexit\n"
+
+    service = InitialImportService(db_session)
+    preview = service.create_preview_from_text(olt.id, raw)
+    assert preview["pon_ports"] == 16
+
+    service.confirm_import(preview["import_job_id"])
+    ports = db_session.scalars(select(PonPort).where(PonPort.olt_id == olt.id).order_by(PonPort.port)).all()
+    assert len(ports) == 16
+    assert ports[-1].interface_name == "gpon-olt_1/2/16"
+    assert ports[-1].total_count == 0
+    assert ports[-1].online_count == 0
+    assert ports[-1].offline_count == 0
+    assert ports[-1].oper_status == "empty"
+    assert ports[-1].sync_source == "Telnet Read-Only"
+
+
+def test_confirm_blocks_critical_parser_errors(db_session, olt):
+    raw = "interface gpon-onu_1/2/1:1\n description texto_sin_autorizacion\nexit\n"
+    service = InitialImportService(db_session)
+    preview = service.create_preview_from_text(olt.id, raw)
+    assert preview["critical_errors"]
+
+    with pytest.raises(ImportCriticalError):
+        service.confirm_import(preview["import_job_id"])
+
+    assert scalar_count(db_session, Onu) == 0
+    db_session.refresh(olt)
+    assert olt.initial_import_status == "failed"
 
 
 def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, olt, raw_config):
@@ -206,6 +255,12 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert onu.olt_code_snapshot == "OLT-TEST-01"
     special_onu = db_session.scalar(select(Onu).where(Onu.olt_id == olt.id, Onu.serial_number == "GPON00CBAC10"))
     assert special_onu.service_mode_code == "transparent_special"
+    incomplete_onu = db_session.scalar(select(Onu).where(Onu.olt_id == olt.id, Onu.parsed_zone_name == "SIN_ZONA"))
+    assert incomplete_onu is not None
+    assert incomplete_onu.description_original == incomplete_onu.raw_description
+    assert incomplete_onu.description_parse_status in {"partial", "unknown"}
+    assert incomplete_onu.technician_notes == incomplete_onu.raw_description
+    assert db_session.get(Zone, incomplete_onu.zone_id).name == "SIN_ZONA"
     occupied_port = db_session.scalar(select(NapPort).where(NapPort.nap_id == nap.id, NapPort.port_number == 2))
     assert occupied_port.status == "occupied"
     assert occupied_port.onu_id == onu.id
@@ -228,6 +283,43 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert olt.last_import_job_id == preview["import_job_id"]
     assert olt.last_import_confirmed_at is not None
     assert ProvisioningService(db_session).can_provision(olt.id) is True
+
+
+def test_import_keeps_identical_ftth_inventory_isolated_by_olt(db_session, olt, raw_config):
+    second_olt = Olt(
+        olt_code="OLT-TEST-02",
+        name="OLT Test 2",
+        vendor="ZTE",
+        model="C300",
+        firmware="V1.2.5P3",
+        ip_address="127.0.0.2",
+        telnet_port=23,
+        username="admin",
+        password_encrypted="not-used",
+        status="test",
+    )
+    db_session.add(second_olt)
+    db_session.commit()
+
+    service = InitialImportService(db_session)
+    for target in (olt, second_olt):
+        preview = service.create_preview_from_text(target.id, raw_config)
+        service.confirm_import(preview["import_job_id"])
+
+    zones = db_session.scalars(select(Zone).where(Zone.name == "Lagunas").order_by(Zone.olt_id)).all()
+    assert {zone.olt_id for zone in zones} == {olt.id, second_olt.id}
+    assert {zone.olt_code_snapshot for zone in zones} == {olt.olt_code, second_olt.olt_code}
+
+    naps = db_session.scalars(select(Nap).where(Nap.name == "C1").order_by(Nap.olt_id)).all()
+    assert {nap.olt_id for nap in naps} == {olt.id, second_olt.id}
+    assert all(nap.zone.olt_id == nap.olt_id for nap in naps)
+    assert all(port.olt_id == nap.olt_id for nap in naps for port in nap.ports)
+
+    imported_onus = db_session.scalars(select(Onu).where(Onu.serial_number == "BTPTDD2459E4")).all()
+    assert {onu.olt_id for onu in imported_onus} == {olt.id, second_olt.id}
+    assert all(onu.zone_id in {zone.id for zone in zones if zone.olt_id == onu.olt_id} for onu in imported_onus)
+    assert db_session.scalar(select(Vlan).where(Vlan.olt_id == olt.id, Vlan.vlan_id == 200)) is not None
+    assert db_session.scalar(select(Vlan).where(Vlan.olt_id == second_olt.id, Vlan.vlan_id == 200)) is not None
 
 
 def test_olt_code_validation_and_uniqueness(db_session):
@@ -264,9 +356,28 @@ def test_olt_code_validation_and_uniqueness(db_session):
         }
     )
     assert created.olt_code == "OLT-PROD-01"
-    assert created.initial_import_status == "pending"
+    assert created.initial_import_status == "draft"
     assert ProvisioningService(db_session).can_provision(created.id) is False
 
+    created.initial_import_status = "confirmed"
+    db_session.commit()
+    with pytest.raises(ValueError, match="Ya existe una OLT confirmada"):
+        service.create(
+            {
+                "olt_code": "OLT-PROD-02",
+                "name": "OLT Produccion duplicada",
+                "ip_address": "10.0.0.3",
+                "telnet_port": 23,
+                "username": "admin",
+                "password": "secret",
+                "vendor": "ZTE",
+                "model": "C300",
+                "firmware": "V1.2.5P3",
+                "connection_type": "telnet",
+                "environment": "production",
+                "status": "unknown",
+            }
+        )
     with pytest.raises(ValueError, match="olt_code already exists"):
         service.create(
             {

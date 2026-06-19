@@ -8,10 +8,11 @@ import { Input } from "@/components/ui/input";
 import { Panel } from "@/components/ui/panel";
 import { api } from "@/services/api";
 import { useApiData } from "@/hooks/useApiData";
-import type { Nap, NapPort, Zone } from "@/types";
+import type { Nap, NapPort, Olt, Zone } from "@/types";
 
 export default function NapsPage() {
   const [selectedNapId, setSelectedNapId] = useState<number | null>(null);
+  const olts = useApiData<Olt[]>(() => api.olts({ environment: "production" }), []);
   const zones = useApiData<Zone[]>(() => api.zones({ is_active: 1 }), []);
   const naps = useApiData<Nap[]>(() => api.naps({ is_active: 1 }), []);
   const ports = useApiData<NapPort[]>(() => api.napPorts(), []);
@@ -20,6 +21,7 @@ export default function NapsPage() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     await api.createNap({
+      olt_id: Number(form.get("olt_id")),
       zone_id: Number(form.get("zone_id")),
       name: String(form.get("name")),
       code: String(form.get("code") || ""),
@@ -39,7 +41,8 @@ export default function NapsPage() {
           <p className="mt-1 text-sm text-muted">Cada NAP crea puertos internos segun su capacidad. No modifica la OLT.</p>
         </div>
         <Panel className="p-4">
-          <form className="grid gap-3 md:grid-cols-6" onSubmit={submit}>
+          <form className="grid gap-3 md:grid-cols-7" onSubmit={submit}>
+            <select name="olt_id" className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm" required><option value="">OLT</option>{olts.data.map((olt) => <option key={olt.id} value={olt.id}>{olt.olt_code} - {olt.name}</option>)}</select>
             <select name="zone_id" className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm" required>
               <option value="">Zona</option>
               {zones.data.map((zone) => <option key={zone.id} value={zone.id}>{zone.name}</option>)}
@@ -57,6 +60,7 @@ export default function NapsPage() {
           items={naps.data}
           columns={[
             { key: "name", label: "Nombre" },
+            { key: "olt_code_snapshot", label: "OLT" },
             { key: "code", label: "Codigo" },
             { key: "nap_type", label: "Tipo" },
             { key: "capacity", label: "Capacidad" },

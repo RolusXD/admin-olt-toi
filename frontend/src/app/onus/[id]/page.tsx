@@ -2,8 +2,11 @@
 
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { FormEvent, useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { Panel } from "@/components/ui/panel";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { api } from "@/services/api";
 import { useApiData } from "@/hooks/useApiData";
 import type { Nap, Olt, Onu, OnuEvent, PonPort, PowerSample, Zone } from "@/types";
@@ -17,12 +20,38 @@ export default function OnuDetailPage() {
   const ponPorts = useApiData<PonPort[]>(() => api.ponPorts(), []);
   const history = useApiData<PowerSample[]>(() => api.onuPowerHistory(params.id), []);
   const events = useApiData<OnuEvent[]>(() => api.onuEvents(params.id), []);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
 
   const current = onu.data;
   const olt = olts.data.find((item) => item.id === current?.olt_id);
   const zone = zones.data.find((item) => item.id === current?.zone_id);
   const nap = naps.data.find((item) => item.id === current?.nap_id);
   const pon = ponPorts.data.find((item) => item.id === current?.pon_port_id);
+
+  async function saveInternalInfo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!current) return;
+    const form = new FormData(event.currentTarget);
+    setSaving(true); setMessage(null);
+    try {
+      const updated = await api.updateOnuInternalInfo(current.id, {
+        zone_id: form.get("zone_id") ? Number(form.get("zone_id")) : null,
+        nap_id: form.get("nap_id") ? Number(form.get("nap_id")) : null,
+        nap_port: form.get("nap_port") ? Number(form.get("nap_port")) : null,
+        zone_name: String(form.get("zone_name") || "") || null,
+        nap_name: String(form.get("nap_name") || "") || null,
+        nap_port_label: String(form.get("nap_port") || "") || null,
+        address_reference: String(form.get("address_reference") || "") || null,
+        odb_name: String(form.get("odb_name") || "") || null,
+        external_id: String(form.get("external_id") || "") || null,
+        auth_date: String(form.get("auth_date") || "") || null,
+        technician_notes: String(form.get("technician_notes") || "") || null,
+      });
+      onu.setData(updated); setMessage("Informacion interna actualizada. No se enviaron comandos a la OLT.");
+    } catch (exc) { setMessage(exc instanceof Error ? exc.message : "No se pudo guardar"); }
+    finally { setSaving(false); }
+  }
 
   return (
     <AppShell>
@@ -66,6 +95,31 @@ export default function OnuDetailPage() {
               <div className="text-sm text-slate-800">{formatDate(current.last_monitored_at)}</div>
             </Panel>
           </div>
+        )}
+
+        {current && (
+          <Panel className="p-4">
+            <h2 className="mb-1 text-sm font-semibold text-slate-950">Informacion importada / Observaciones</h2>
+            <p className="mb-4 text-xs text-muted">Edicion exclusiva de la base interna. No modifica la description ni la configuracion de la OLT.</p>
+            <div className="mb-4 grid gap-3 md:grid-cols-[180px_1fr]">
+              <div className="text-sm text-muted">Description original</div>
+              <div className="whitespace-pre-wrap break-all rounded-md border border-slate-200 bg-slate-50 p-3 font-mono text-xs text-slate-800">{current.description_original || current.raw_description || "Sin description"}</div>
+              <div className="text-sm text-muted">Estado de interpretacion</div><div className="text-sm font-medium text-slate-800">{current.description_parse_status ?? "unknown"}</div>
+            </div>
+            <form key={current.updated_at ?? current.id} className="grid gap-3 md:grid-cols-3" onSubmit={saveInternalInfo}>
+              <select name="zone_id" defaultValue={current.zone_id ?? ""} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"><option value="">Zona interna</option>{zones.data.filter((item) => item.olt_id === current.olt_id || item.id === current.zone_id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+              <select name="nap_id" defaultValue={current.nap_id ?? ""} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"><option value="">NAP interna</option>{naps.data.filter((item) => item.olt_id === current.olt_id || item.id === current.nap_id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+              <Input name="nap_port" type="number" defaultValue={current.nap_port ?? ""} placeholder="Puerto NAP" />
+              <Input name="zone_name" defaultValue={current.zone_name ?? zone?.name ?? ""} placeholder="Zona descriptiva" />
+              <Input name="nap_name" defaultValue={current.nap_name ?? nap?.name ?? ""} placeholder="NAP descriptiva" />
+              <Input name="address_reference" defaultValue={current.address_reference ?? ""} placeholder="Direccion / referencia" />
+              <Input name="odb_name" defaultValue={current.odb_name ?? ""} placeholder="ODB / ODN" />
+              <Input name="external_id" defaultValue={current.external_id ?? ""} placeholder="ID externo" />
+              <Input name="auth_date" type="date" defaultValue={current.auth_date?.slice(0, 10) ?? ""} />
+              <textarea name="technician_notes" defaultValue={current.technician_notes ?? ""} className="min-h-28 rounded-md border border-slate-200 bg-white p-3 text-sm md:col-span-3" placeholder="Observaciones internas editables" />
+              <div className="flex items-center gap-3 md:col-span-3"><Button disabled={saving}>{saving ? "Guardando..." : "Guardar observaciones"}</Button>{message && <span className="text-sm text-slate-700">{message}</span>}</div>
+            </form>
+          </Panel>
         )}
 
         <Panel className="overflow-hidden">

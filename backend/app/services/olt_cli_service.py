@@ -102,6 +102,8 @@ class OltCliService:
             version_raw = self._call_read_only(olt.id, "show version-running", driver.show_version_running)
             cards = self._call_read_only(olt.id, "show card", driver.show_card)
             olt.status = "online"
+            if olt.initial_import_status != "confirmed":
+                olt.initial_import_status = "connection_tested"
             self.db.commit()
             return {
                 "healthy": True,
@@ -178,20 +180,7 @@ class OltCliService:
         try:
             driver.connect(disable_paging=False)
             cards = self._call_read_only(olt.id, "show card", driver.show_card)
-            for card in cards:
-                existing = self.db.scalar(select(OltCard).where(OltCard.olt_id == olt.id, OltCard.slot_number == card.slot))
-                if not existing:
-                    existing = OltCard(olt_id=olt.id, slot_number=card.slot)
-                    self.db.add(existing)
-                existing.card_type = card.card_type
-                existing.real_type = card.real_type or card.card_type
-                existing.firmware = card.firmware
-                existing.role = card.role
-                existing.status = card.status
-                existing.port_count = card.ports
-                existing.last_seen_at = synced_at
-                existing.last_sync_at = synced_at
-                existing.sync_source = "Telnet Read-Only"
+            self._persist_cards(olt, cards, synced_at)
             self._record_monitoring_execution(
                 olt.id,
                 "sync_cards",
@@ -640,6 +629,8 @@ class OltCliService:
                 connection_success = True
             except Exception as exc:
                 errors.append({"command": "connect", "error": str(exc)})
+                if olt.initial_import_status != "confirmed":
+                    olt.initial_import_status = "failed"
                 self.db.commit()
                 return {
                     "olt_id": olt.id,
@@ -662,12 +653,15 @@ class OltCliService:
                 errors.append({"command": exc.command, "error": exc.message})
             try:
                 cards = self._call_read_only(olt.id, "show card", driver.show_card)
+                self._persist_cards(olt, cards, datetime.now(UTC))
             except DriverCommandError as exc:
                 errors.append({"command": exc.command, "error": exc.message})
             try:
                 states = self._call_read_only(olt.id, "show gpon onu state", driver.show_onu_state)
             except DriverCommandError as exc:
                 errors.append({"command": exc.command, "error": exc.message})
+            if olt.initial_import_status != "confirmed":
+                olt.initial_import_status = "connection_tested" if not errors else "failed"
             self.db.commit()
             return {
                 "olt_id": olt.id,
@@ -681,6 +675,22 @@ class OltCliService:
             }
         finally:
             driver.disconnect()
+
+    def _persist_cards(self, olt: Olt, cards: list, synced_at: datetime) -> None:
+        for card in cards:
+            existing = self.db.scalar(select(OltCard).where(OltCard.olt_id == olt.id, OltCard.slot_number == card.slot))
+            if not existing:
+                existing = OltCard(olt_id=olt.id, slot_number=card.slot)
+                self.db.add(existing)
+            existing.card_type = card.card_type
+            existing.real_type = card.real_type or card.card_type
+            existing.firmware = card.firmware
+            existing.role = card.role
+            existing.status = card.status
+            existing.port_count = card.ports
+            existing.last_seen_at = synced_at
+            existing.last_sync_at = synced_at
+            existing.sync_source = "Telnet Read-Only"
 
     def _state_counts(self, states) -> dict:
         counts = {"total": len(states), "working": 0, "offline": 0, "los": 0, "dying_gasp": 0}

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.api.deps import DbSession
-from app.models.entities import Zone
+from app.models.entities import Olt, Zone
 from app.schemas.entities import ZoneRead, ZoneSchema
 
 router = APIRouter(prefix="/zones", tags=["zones"])
@@ -15,8 +15,11 @@ def list_zones(
     code: str | None = None,
     source: str | None = None,
     is_active: bool | None = Query(default=None),
+    olt_id: int | None = None,
 ) -> list[Zone]:
     statement = select(Zone)
+    if olt_id is not None:
+        statement = statement.where(Zone.olt_id == olt_id)
     if name:
         statement = statement.where(Zone.name.ilike(f"%{name}%"))
     if code:
@@ -30,10 +33,15 @@ def list_zones(
 
 @router.post("", response_model=ZoneRead, status_code=status.HTTP_201_CREATED)
 def create_zone(payload: ZoneSchema, db: DbSession) -> Zone:
-    existing = db.scalar(select(Zone).where(Zone.name == payload.name))
+    if payload.olt_id is None:
+        raise HTTPException(status_code=422, detail="olt_id is required")
+    olt = db.get(Olt, payload.olt_id)
+    if not olt:
+        raise HTTPException(status_code=404, detail="OLT not found")
+    existing = db.scalar(select(Zone).where(Zone.olt_id == payload.olt_id, Zone.name == payload.name))
     if existing:
         raise HTTPException(status_code=409, detail="Zone already exists")
-    zone = Zone(**payload.model_dump())
+    zone = Zone(**payload.model_dump(exclude={"olt_code_snapshot"}), olt_code_snapshot=olt.olt_code)
     db.add(zone)
     db.commit()
     db.refresh(zone)

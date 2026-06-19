@@ -43,6 +43,11 @@ def test_parser_preserves_unstructured_description_as_partial():
     assert "missing zone" in parsed.warnings
 
 
+def test_parser_accepts_zone_token_case_variants():
+    assert parse_onu_description("$$$$ZONE_San_Roque_descr_cliente").zone_name == "San_Roque"
+    assert parse_onu_description("zone_Zone_1_descr_cliente").zone_name == "Zone_1"
+
+
 def test_builder_generates_productive_compatible_description():
     description = build_onu_description(
         zone="San Roque",

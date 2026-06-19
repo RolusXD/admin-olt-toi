@@ -29,6 +29,9 @@ try {
     Write-Host "Building backend, worker and frontend..." -ForegroundColor Cyan
     Invoke-Compose -Arguments $buildArguments
 
+    Write-Host "Applying database migrations..." -ForegroundColor Cyan
+    Invoke-Compose -Arguments @("run", "--rm", "backend", "alembic", "upgrade", "head")
+
     Write-Host "Recreating containers..." -ForegroundColor Cyan
     Invoke-Compose -Arguments @("up", "-d", "--force-recreate", "backend", "worker", "frontend")
 

@@ -58,9 +58,9 @@ def parse_onu_description(value: str | None) -> ParsedOnuDescription:
     elif any(useful_fields):
         status = "partial"
     elif original:
-        status = "unparsed"
+        status = "unknown"
     else:
-        status = "empty"
+        status = "unknown"
 
     return ParsedOnuDescription(
         description_original=original,

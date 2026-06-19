@@ -34,7 +34,7 @@ class Olt(Base, TimestampMixin):
     snmp_udp_port: Mapped[int] = mapped_column(Integer, default=161)
     connection_type: Mapped[str] = mapped_column(String(30), default="telnet")
     status: Mapped[str] = mapped_column(String(30), default="unknown")
-    initial_import_status: Mapped[str] = mapped_column(String(40), default="pending")
+    initial_import_status: Mapped[str] = mapped_column(String(40), default="draft")
     last_import_job_id: Mapped[int | None] = mapped_column(ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True)
     last_import_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -249,9 +249,12 @@ class ProfileCatalog(Base, TimestampMixin):
 
 class Zone(Base):
     __tablename__ = "zones"
+    __table_args__ = (UniqueConstraint("olt_id", "name", name="uq_zones_olt_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(120), unique=True)
+    olt_id: Mapped[int | None] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"), nullable=True)
+    olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    name: Mapped[str] = mapped_column(String(120))
     code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     description: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -263,9 +266,11 @@ class Zone(Base):
 
 class Nap(Base):
     __tablename__ = "naps"
-    __table_args__ = (UniqueConstraint("zone_id", "name", name="uq_naps_zone_name"),)
+    __table_args__ = (UniqueConstraint("olt_id", "zone_id", "name", name="uq_naps_olt_zone_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    olt_id: Mapped[int | None] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"), nullable=True)
+    olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
     zone_id: Mapped[int] = mapped_column(ForeignKey("zones.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(120))
     code: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -288,6 +293,8 @@ class NapPort(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("nap_id", "port_number", name="uq_nap_ports_nap_port"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    olt_id: Mapped[int | None] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"), nullable=True)
+    olt_code_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
     nap_id: Mapped[int] = mapped_column(ForeignKey("naps.id", ondelete="CASCADE"))
     port_number: Mapped[int] = mapped_column(Integer)
     label: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -384,6 +391,7 @@ class Onu(Base, TimestampMixin):
     external_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     description_parse_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     description_parse_warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    technician_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     service_mode_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     source: Mapped[str] = mapped_column(String(40), default="manual")
     import_source: Mapped[str] = mapped_column(String(40), default="manual")

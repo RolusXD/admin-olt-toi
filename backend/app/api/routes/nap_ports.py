@@ -14,8 +14,11 @@ def list_nap_ports(
     nap_id: int | None = None,
     status: str | None = None,
     port_number: int | None = Query(default=None),
+    olt_id: int | None = None,
 ) -> list[NapPort]:
     statement = select(NapPort)
+    if olt_id is not None:
+        statement = statement.where(NapPort.olt_id == olt_id)
     if nap_id is not None:
         statement = statement.where(NapPort.nap_id == nap_id)
     if status:
@@ -27,12 +30,17 @@ def list_nap_ports(
 
 @router.post("", response_model=NapPortRead, status_code=status.HTTP_201_CREATED)
 def create_nap_port(payload: NapPortCreate, db: DbSession) -> NapPort:
-    if not db.get(Nap, payload.nap_id):
+    nap = db.get(Nap, payload.nap_id)
+    if not nap:
         raise HTTPException(status_code=404, detail="NAP not found")
     existing = db.scalar(select(NapPort).where(NapPort.nap_id == payload.nap_id, NapPort.port_number == payload.port_number))
     if existing:
         raise HTTPException(status_code=409, detail="NAP port already exists")
-    port = NapPort(**payload.model_dump())
+    port = NapPort(
+        **payload.model_dump(exclude={"olt_id", "olt_code_snapshot"}),
+        olt_id=nap.olt_id,
+        olt_code_snapshot=nap.olt_code_snapshot,
+    )
     db.add(port)
     db.commit()
     db.refresh(port)

@@ -2,9 +2,9 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.api.deps import DbSession
-from app.models.entities import Olt, Onu, OnuEventHistory, OnuPowerHistory
+from app.models.entities import Nap, Olt, Onu, OnuEventHistory, OnuPowerHistory, Zone
 from app.repositories.entities import OnuRepository, PowerRepository
-from app.schemas.entities import OnuEventRead, OnuRead, OnuSchema, PowerSampleCreate, PowerSampleRead
+from app.schemas.entities import OnuEventRead, OnuInternalInfoUpdate, OnuRead, OnuSchema, PowerSampleCreate, PowerSampleRead
 from app.services.onu_service import OnuService
 
 router = APIRouter(prefix="/onus", tags=["onus"])
@@ -64,6 +64,27 @@ def update_onu(onu_id: int, payload: OnuSchema, db: DbSession) -> Onu:
     if not onu:
         raise HTTPException(status_code=404, detail="ONU not found")
     return OnuRepository(db).update(onu, payload.model_dump())
+
+
+@router.patch("/{onu_id}/internal-info", response_model=OnuRead)
+def update_onu_internal_info(onu_id: int, payload: OnuInternalInfoUpdate, db: DbSession) -> Onu:
+    onu = db.get(Onu, onu_id)
+    if not onu:
+        raise HTTPException(status_code=404, detail="ONU not found")
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("zone_id") is not None:
+        zone = db.get(Zone, data["zone_id"])
+        if not zone or zone.olt_id != onu.olt_id:
+            raise HTTPException(status_code=422, detail="Zone does not belong to ONU OLT")
+    if data.get("nap_id") is not None:
+        nap = db.get(Nap, data["nap_id"])
+        if not nap or nap.olt_id != onu.olt_id:
+            raise HTTPException(status_code=422, detail="NAP does not belong to ONU OLT")
+    for key, value in data.items():
+        setattr(onu, key, value)
+    db.commit()
+    db.refresh(onu)
+    return onu
 
 
 @router.get("/{onu_id}", response_model=OnuRead)

@@ -25,7 +25,7 @@ from app.schemas.entities import (
     UnauthorizedOnuDiscoveryResult,
     VlanTechnicalRead,
 )
-from app.services.initial_import_service import InitialImportService
+from app.services.initial_import_service import ImportCriticalError, InitialImportService
 from app.services.onu_discovery_service import OnuDiscoveryService
 from app.services.olt_cli_service import OltCliService
 from app.services.olt_service import OltService
@@ -34,11 +34,28 @@ router = APIRouter(prefix="/olts", tags=["olts"])
 
 
 @router.get("", response_model=list[OltRead])
-def list_olts(db: DbSession, environment: str | None = Query(default=None)) -> list:
+def list_olts(
+    db: DbSession,
+    environment: str | None = Query(default=None),
+    include_incomplete: bool = Query(default=False),
+) -> list:
     statement = select(Olt)
+    if not include_incomplete:
+        statement = statement.where(Olt.initial_import_status == "confirmed")
     if environment:
         statement = statement.where(Olt.environment == environment.strip().lower())
     return list(db.scalars(statement.order_by(Olt.environment.desc(), Olt.olt_code)))
+
+
+@router.post("/{olt_id}/cancel-import", response_model=OltRead)
+def cancel_olt_import(olt_id: int, db: DbSession):
+    olt = get_olt_or_404(db, olt_id)
+    if olt.initial_import_status == "confirmed":
+        raise HTTPException(status_code=409, detail="No se puede cancelar una OLT con importacion confirmada")
+    olt.initial_import_status = "cancelled"
+    db.commit()
+    db.refresh(olt)
+    return olt
 
 
 @router.post("", response_model=OltRead, status_code=status.HTTP_201_CREATED)
@@ -349,6 +366,8 @@ def initial_import_confirm(olt_id: int, import_job_id: int, db: DbSession) -> di
     olt = get_olt_or_404(db, olt_id)
     try:
         return InitialImportService(db).confirm(olt, import_job_id)
+    except ImportCriticalError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

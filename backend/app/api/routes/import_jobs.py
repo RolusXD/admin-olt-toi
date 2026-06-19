@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.api.deps import DbSession
 from app.schemas.entities import ImportJobRead
-from app.services.initial_import_service import InitialImportService
+from app.services.initial_import_service import ImportCriticalError, InitialImportService
 
 router = APIRouter(tags=["import"])
 
@@ -27,5 +27,7 @@ def get_initial_import_job_alias(job_id: int, db: DbSession) -> dict:
 def confirm_initial_import_job(import_job_id: int, db: DbSession) -> dict:
     try:
         return InitialImportService(db).confirm_import(import_job_id)
+    except ImportCriticalError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

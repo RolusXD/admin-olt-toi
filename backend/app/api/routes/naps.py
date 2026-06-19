@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.api.deps import DbSession
-from app.models.entities import Nap, NapPort
+from app.models.entities import Nap, NapPort, Olt, Zone
 from app.schemas.entities import NapRead, NapSchema
 
 router = APIRouter(prefix="/naps", tags=["naps"])
@@ -15,8 +15,11 @@ def list_naps(
     name: str | None = None,
     code: str | None = None,
     is_active: bool | None = Query(default=None),
+    olt_id: int | None = None,
 ) -> list[Nap]:
     statement = select(Nap)
+    if olt_id is not None:
+        statement = statement.where(Nap.olt_id == olt_id)
     if zone_id is not None:
         statement = statement.where(Nap.zone_id == zone_id)
     if name:
@@ -30,10 +33,16 @@ def list_naps(
 
 @router.post("", response_model=NapRead, status_code=status.HTTP_201_CREATED)
 def create_nap(payload: NapSchema, db: DbSession) -> Nap:
-    existing = db.scalar(select(Nap).where(Nap.zone_id == payload.zone_id, Nap.name == payload.name))
+    if payload.olt_id is None:
+        raise HTTPException(status_code=422, detail="olt_id is required")
+    olt = db.get(Olt, payload.olt_id)
+    zone = db.get(Zone, payload.zone_id)
+    if not olt or not zone or zone.olt_id != olt.id:
+        raise HTTPException(status_code=422, detail="OLT and zone association is invalid")
+    existing = db.scalar(select(Nap).where(Nap.olt_id == olt.id, Nap.zone_id == payload.zone_id, Nap.name == payload.name))
     if existing:
         raise HTTPException(status_code=409, detail="NAP already exists in this zone")
-    nap = Nap(**payload.model_dump())
+    nap = Nap(**payload.model_dump(exclude={"olt_code_snapshot"}), olt_code_snapshot=olt.olt_code)
     db.add(nap)
     db.flush()
     ensure_nap_ports(db, nap)
@@ -88,4 +97,4 @@ def ensure_nap_ports(db, nap: Nap) -> None:
     existing = set(db.scalars(select(NapPort.port_number).where(NapPort.nap_id == nap.id)))
     for port in range(1, (nap.capacity or 0) + 1):
         if port not in existing:
-            db.add(NapPort(nap_id=nap.id, port_number=port, label=f"Puerto {port}", status="free"))
+            db.add(NapPort(olt_id=nap.olt_id, olt_code_snapshot=nap.olt_code_snapshot, nap_id=nap.id, port_number=port, label=f"Puerto {port}", status="free"))

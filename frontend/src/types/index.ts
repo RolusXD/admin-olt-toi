@@ -38,6 +38,8 @@ export type OltInventorySummary = {
 
 export type Zone = {
   id: number;
+  olt_id?: number | null;
+  olt_code_snapshot?: string | null;
   name: string;
   code?: string | null;
   description?: string | null;
@@ -48,6 +50,8 @@ export type Zone = {
 
 export type Nap = {
   id: number;
+  olt_id?: number | null;
+  olt_code_snapshot?: string | null;
   zone_id: number;
   name: string;
   code?: string | null;
@@ -188,6 +192,8 @@ export type ProfileCatalog = {
 
 export type NapPort = {
   id: number;
+  olt_id?: number | null;
+  olt_code_snapshot?: string | null;
   nap_id: number;
   port_number: number;
   label?: string | null;
@@ -346,6 +352,7 @@ export type Onu = {
   last_monitored_at?: string | null;
   status: string;
   last_down_cause?: string | null;
+  auth_date?: string | null;
   distance_m?: number | null;
   nap_port?: number | null;
   raw_description?: string | null;
@@ -359,8 +366,11 @@ export type Onu = {
   external_id?: string | null;
   description_parse_status?: string | null;
   description_parse_warnings?: string | null;
+  technician_notes?: string | null;
   service_mode_code?: string | null;
   import_source?: string | null;
+  created_at?: string;
+  updated_at?: string;
 };
 
 export type PowerSample = {
@@ -431,10 +441,14 @@ export type ImportPreview = {
   gpon_profiles: number;
   onu_types: number;
   pon_ports: number;
+  uplinks?: number;
   onus: number;
+  onu_management_modes?: number;
   zones_detected: string[];
   naps_detected: string[];
   warnings: string[];
+  legacy_incomplete: string[];
+  critical_errors: string[];
 };
 
 export type ImportConfirmResult = {
@@ -444,6 +458,7 @@ export type ImportConfirmResult = {
   gpon_profiles_upserted: number;
   onu_types_upserted: number;
   pon_ports_upserted: number;
+  uplinks_upserted?: number;
   onus_upserted: number;
   zones_upserted: number;
   naps_upserted: number;

@@ -8,15 +8,17 @@ import { Input } from "@/components/ui/input";
 import { Panel } from "@/components/ui/panel";
 import { api } from "@/services/api";
 import { useApiData } from "@/hooks/useApiData";
-import type { Zone } from "@/types";
+import type { Olt, Zone } from "@/types";
 
 export default function ZonesPage() {
   const items = useApiData<Zone[]>(() => api.zones({ is_active: 1 }), []);
+  const olts = useApiData<Olt[]>(() => api.olts({ environment: "production" }), []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     await api.createZone({
+      olt_id: Number(form.get("olt_id")),
       name: String(form.get("name")),
       code: String(form.get("code") || ""),
       description: String(form.get("description") || ""),
@@ -33,7 +35,8 @@ export default function ZonesPage() {
           <p className="mt-1 text-sm text-muted">Zonas operativas detectadas o creadas manualmente.</p>
         </div>
         <Panel className="p-4">
-          <form className="grid gap-3 md:grid-cols-4" onSubmit={submit}>
+          <form className="grid gap-3 md:grid-cols-5" onSubmit={submit}>
+            <select name="olt_id" className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm" required><option value="">OLT</option>{olts.data.map((olt) => <option key={olt.id} value={olt.id}>{olt.olt_code} - {olt.name}</option>)}</select>
             <Input name="name" placeholder="Nombre" required />
             <Input name="code" placeholder="Codigo" />
             <Input name="description" placeholder="Descripcion" />
@@ -45,6 +48,7 @@ export default function ZonesPage() {
           items={items.data}
           columns={[
             { key: "name", label: "Nombre" },
+            { key: "olt_code_snapshot", label: "OLT" },
             { key: "code", label: "Codigo" },
             { key: "description", label: "Descripcion" },
             { key: "source", label: "Source" },

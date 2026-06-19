@@ -125,6 +125,8 @@ class OltInventorySummary(BaseModel):
 
 
 class ZoneSchema(BaseModel):
+    olt_id: int | None = None
+    olt_code_snapshot: str | None = None
     name: str
     code: str | None = None
     description: str | None = None
@@ -139,6 +141,8 @@ class ZoneRead(ZoneSchema):
 
 
 class NapSchema(BaseModel):
+    olt_id: int | None = None
+    olt_code_snapshot: str | None = None
     zone_id: int
     name: str
     code: str | None = None
@@ -341,6 +345,8 @@ class SpeedProfileRead(SpeedProfileCreate):
 
 
 class NapPortCreate(BaseModel):
+    olt_id: int | None = None
+    olt_code_snapshot: str | None = None
     nap_id: int
     port_number: int
     label: str | None = None
@@ -617,6 +623,7 @@ class OnuSchema(BaseModel):
     external_id: str | None = None
     description_parse_status: str | None = None
     description_parse_warnings: list[str] | str | None = None
+    technician_notes: str | None = None
     service_mode_code: str | None = None
     source: str = "manual"
     import_source: str = "manual"
@@ -631,6 +638,20 @@ class OnuRead(OnuSchema):
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class OnuInternalInfoUpdate(BaseModel):
+    zone_id: int | None = None
+    nap_id: int | None = None
+    nap_port: int | None = None
+    zone_name: str | None = None
+    nap_name: str | None = None
+    nap_port_label: str | None = None
+    address_reference: str | None = None
+    odb_name: str | None = None
+    external_id: str | None = None
+    auth_date: datetime | None = None
+    technician_notes: str | None = None
 
 
 class PowerSampleCreate(BaseModel):
@@ -1001,10 +1022,14 @@ class ImportPreviewResponse(BaseModel):
     gpon_profiles: int
     onu_types: int
     pon_ports: int
+    uplinks: int = 0
     onus: int
+    onu_management_modes: int = 0
     zones_detected: list[str]
     naps_detected: list[str]
     warnings: list[str]
+    legacy_incomplete: list[str] = Field(default_factory=list)
+    critical_errors: list[str] = Field(default_factory=list)
 
 
 class ImportConfirmResponse(BaseModel):
@@ -1014,6 +1039,7 @@ class ImportConfirmResponse(BaseModel):
     gpon_profiles_upserted: int
     onu_types_upserted: int
     pon_ports_upserted: int
+    uplinks_upserted: int = 0
     onus_upserted: int
     zones_upserted: int
     naps_upserted: int

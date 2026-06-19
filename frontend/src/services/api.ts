@@ -81,7 +81,7 @@ export const api = {
   summary: (params: { olt_id?: number | string; olt_code?: string; environment?: string } = {}) =>
     request<DashboardSummary>(`/dashboard/summary${toQuery(params)}`),
   environmentSummary: () => request<DashboardEnvironmentSummary>("/dashboard/environment-summary"),
-  olts: (params: { environment?: string } = {}) => request<Olt[]>(`/olts${toQuery(params)}`),
+  olts: (params: { environment?: string; include_incomplete?: boolean } = {}) => request<Olt[]>(`/olts${toQuery(params)}`),
   olt: (id: number | string) => request<Olt>(`/olts/${id}`),
   oltInventorySummary: (id: number | string) => request<OltInventorySummary>(`/olts/${id}/inventory-summary`),
   oltCards: (id: number | string) => request<OltCard[]>(`/olts/${id}/cards`),
@@ -149,6 +149,9 @@ export const api = {
     request<Olt>("/olts", { method: "POST", body: JSON.stringify(payload) }),
   updateOlt: (id: number | string, payload: Record<string, unknown>) =>
     request<Olt>(`/olts/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
+  cancelOltImport: (id: number | string) => request<Olt>(`/olts/${id}/cancel-import`, { method: "POST" }),
+  updateOnuInternalInfo: (id: number | string, payload: Record<string, unknown>) =>
+    request<Onu>(`/onus/${id}/internal-info`, { method: "PATCH", body: JSON.stringify(payload) }),
   createZone: (payload: Record<string, unknown>) =>
     request<Zone>("/zones", { method: "POST", body: JSON.stringify(payload) }),
   createNap: (payload: Record<string, unknown>) =>

@@ -136,6 +136,8 @@ class RunningConfigParseResult:
     onus: list[ParsedOnu]
     onu_management_modes: list[ParsedOnuManagementMode]
     warnings: list[str]
+    legacy_incomplete: list[str] = field(default_factory=list)
+    critical_errors: list[str] = field(default_factory=list)
 
     def summary(self) -> dict:
         zones = sorted({onu.parsed_zone_name for onu in self.onus if onu.parsed_zone_name})
@@ -152,6 +154,8 @@ class RunningConfigParseResult:
             "zones_detected": zones,
             "naps_detected": naps,
             "warnings": self.warnings,
+            "legacy_incomplete": self.legacy_incomplete,
+            "critical_errors": self.critical_errors,
         }
 
 
@@ -163,9 +167,12 @@ def parse_running_config(raw_config: str) -> RunningConfigParseResult:
     onu_types = _parse_onu_types(lines)
     pon_ports = _parse_pon_ports(lines)
     uplinks = _parse_uplinks(lines)
-    onus, warnings = _parse_onus(lines)
+    onus, warnings, legacy_incomplete, critical_errors = _parse_onus(lines)
     onu_management_modes = parse_onu_management_modes(raw_config)
-    return RunningConfigParseResult(vlans, profiles, profile_catalogs, onu_types, pon_ports, uplinks, onus, onu_management_modes, warnings)
+    return RunningConfigParseResult(
+        vlans, profiles, profile_catalogs, onu_types, pon_ports, uplinks, onus, onu_management_modes,
+        warnings, legacy_incomplete, critical_errors,
+    )
 
 
 def _parse_vlans(lines: list[str]) -> list[ParsedVlan]:
@@ -448,9 +455,11 @@ def _parse_uplinks(lines: list[str]) -> list[ParsedOltUplink]:
     return [ParsedOltUplink(**value) for value in uplinks.values()]
 
 
-def _parse_onus(lines: list[str]) -> tuple[list[ParsedOnu], list[str]]:
+def _parse_onus(lines: list[str]) -> tuple[list[ParsedOnu], list[str], list[str], list[str]]:
     onus: dict[str, ParsedOnu] = {}
     warnings: list[str] = []
+    legacy_incomplete: list[str] = []
+    critical_errors: list[str] = []
     current_pon: str | None = None
     current_onu: ParsedOnu | None = None
 
@@ -488,7 +497,9 @@ def _parse_onus(lines: list[str]) -> tuple[list[ParsedOnu], list[str]]:
                         onu_type="unknown",
                         serial_number=onu_if_match.group(1),
                     )
-                    current_onu.warnings.append("ONU interface found without matching authorization line")
+                    issue = "ONU interface found without matching authorization line"
+                    current_onu.warnings.append(issue)
+                    critical_errors.append(f"{current_onu.onu_interface}: {issue}")
                     onus[current_onu.onu_interface] = current_onu
             continue
 
@@ -501,7 +512,9 @@ def _parse_onus(lines: list[str]) -> tuple[list[ParsedOnu], list[str]]:
             current_onu.raw_description = raw_description
             description_warnings = _apply_description(current_onu, raw_description)
             current_onu.warnings.extend(description_warnings)
-            warnings.extend(f"{current_onu.onu_interface}: {warning}" for warning in description_warnings)
+            for warning in description_warnings:
+                target = legacy_incomplete if _is_legacy_incomplete(warning) else warnings
+                target.append(f"{current_onu.onu_interface}: {warning}")
         elif line.startswith("tcont "):
             profile = re.search(r"profile\s+(\S+)", line, re.I)
             if profile:
@@ -516,16 +529,18 @@ def _parse_onus(lines: list[str]) -> tuple[list[ParsedOnu], list[str]]:
                 current_onu.vlan = int(vlan.group(1))
 
     for onu in onus.values():
-        if onu.raw_description and not onu.parsed_zone_name:
-            warning = "description could not be fully interpreted"
+        if not onu.parsed_zone_name:
+            onu.parsed_zone_name = "SIN_ZONA"
+            onu.description_parse_status = onu.description_parse_status or "unknown"
+            warning = "description without explicit zone; assigned SIN_ZONA"
             onu.warnings.append(warning)
             warnings.append(f"{onu.onu_interface}: {warning}")
-    return list(onus.values()), warnings
+    return list(onus.values()), warnings, legacy_incomplete, critical_errors
 
 
 def _apply_description(onu: ParsedOnu, description: str) -> list[str]:
     parsed = parse_onu_description(description)
-    onu.parsed_zone_name = parsed.zone_name
+    onu.parsed_zone_name = parsed.zone_name or "SIN_ZONA"
     onu.parsed_nap_name = parsed.nap_name
     onu.parsed_nap_port = int(parsed.nap_port_label) if parsed.nap_port_label and parsed.nap_port_label.isdigit() else None
     onu.parsed_odn = parsed.odb_name
@@ -537,6 +552,15 @@ def _apply_description(onu: ParsedOnu, description: str) -> list[str]:
     if parsed.external_id:
         onu.serial_number = parsed.external_id
     return parsed.warnings
+
+
+def _is_legacy_incomplete(warning: str) -> bool:
+    return warning in {
+        "missing extid",
+        "missing authd",
+        "authd token without yyyymmdd date",
+        "missing descr/address",
+    }
 
 
 def _first_int(value: str) -> int | None:
