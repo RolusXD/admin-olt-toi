@@ -2,6 +2,19 @@
 .env
 .env.*
 !.env.example
+.envrc
+.secrets/
+secrets/
+secrets.*
+credentials/
+credentials.*
+*_credentials.*
+*_secret.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
 
 # Python
 __pycache__/
@@ -26,6 +39,21 @@ pnpm-debug.log*
 # Runtime data
 backend/storage/backups/
 storage/backups/
+backend/storage/snapshots/
+storage/snapshots/
+backend/storage/olt-configs/
+storage/olt-configs/
+exports/telnet/
+telnet-exports/
+telnet_exports/
+olt-config-exports/
+olt_config_exports/
+*.running-config.txt
+*.running-config.export
+*.telnet-export
+*.telnet.log
+*command-log*.json
+*driver-command-log*.json
 *.backup
 *.bak
 *.tmp

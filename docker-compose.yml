@@ -28,6 +28,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: change-me-in-production
       CRYPTO_KEY: change-me-32-byte-secret-for-prod
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -47,6 +49,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: change-me-in-production
       CRYPTO_KEY: change-me-32-byte-secret-for-prod
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
     depends_on:
       - backend
       - redis

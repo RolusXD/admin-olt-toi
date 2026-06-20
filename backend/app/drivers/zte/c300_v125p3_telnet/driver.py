@@ -86,7 +86,10 @@ class ZteC300V125P3TelnetDriver(DeviceDriver):
         initial_output = self.transport.read_until_prompt(self.prompt_pattern, self.timeout)
         self.last_prompt = self._extract_prompt(initial_output)
         if disable_paging:
-            self.execute("terminal length 0", read_only=False)
+            try:
+                self.execute("terminal length 0", read_only=False)
+            except Exception as exc:
+                logger.warning("OLT did not accept terminal length 0: {}", exc)
 
     def disconnect(self, send_exit: bool = True) -> None:
         if self.transport:
@@ -98,13 +101,13 @@ class ZteC300V125P3TelnetDriver(DeviceDriver):
             finally:
                 self.transport.close()
 
-    def execute(self, command: str, read_only: bool = True) -> str:
+    def execute(self, command: str, read_only: bool = True, timeout: int | None = None) -> str:
         if not self.transport:
             raise RuntimeError("Driver is not connected")
         if read_only:
             self._ensure_read_only_command(command)
         self.transport.write_line(command)
-        output = self.transport.read_until_prompt(self.prompt_pattern, self.timeout)
+        output = self.transport.read_until_prompt(self.prompt_pattern, timeout or self.timeout)
         self.last_prompt = self._extract_prompt(output) or self.last_prompt
         for error in COMMAND_ERRORS:
             if error in output:
@@ -157,7 +160,17 @@ class ZteC300V125P3TelnetDriver(DeviceDriver):
         return self.execute(SUPPORTED_COMMANDS["show_running_config"], read_only=False)
 
     def show_running_config(self) -> str:
-        return self.execute(SUPPORTED_COMMANDS["show_running_config"], read_only=True)
+        output = self.execute(SUPPORTED_COMMANDS["show_running_config"], read_only=True, timeout=max(self.timeout, 120))
+        captured_prompt = self._extract_prompt(output)
+        if not captured_prompt or not self.transport:
+            raise DriverCommandError("show running-config", "No stable final prompt detected", output)
+        self.transport.write_line("")
+        prompt_confirmation = self.transport.read_until_prompt(self.prompt_pattern, self.timeout)
+        confirmed_prompt = self._extract_prompt(prompt_confirmation)
+        if confirmed_prompt != captured_prompt:
+            raise DriverCommandError("show running-config", "Final prompt could not be confirmed", output + prompt_confirmation)
+        self.last_prompt = confirmed_prompt
+        return output
 
     def health_check(self) -> bool:
         try:

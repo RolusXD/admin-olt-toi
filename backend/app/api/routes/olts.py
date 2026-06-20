@@ -2,7 +2,7 @@ from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, sta
 from sqlalchemy import func, select
 
 from app.api.deps import DbSession, get_olt_or_404
-from app.models.entities import DriverCommandLog, GponProfile, ImportJob, Olt, OltCard, OltTechnicalSettings, OltUplink, Onu, PonPort, Vlan
+from app.models.entities import ConfigSnapshot, DriverCommandLog, GponProfile, ImportJob, Olt, OltCard, OltTechnicalSettings, OltUplink, Onu, PonPort, Vlan
 from app.repositories.entities import OltRepository
 from app.schemas.entities import (
     ImportConfirmResponse,
@@ -25,7 +25,7 @@ from app.schemas.entities import (
     UnauthorizedOnuDiscoveryResult,
     VlanTechnicalRead,
 )
-from app.services.initial_import_service import ImportCriticalError, InitialImportService
+from app.services.initial_import_service import ImportCriticalError, InitialImportService, SnapshotValidationError
 from app.services.onu_discovery_service import OnuDiscoveryService
 from app.services.olt_cli_service import OltCliService
 from app.services.olt_service import OltService
@@ -52,6 +52,13 @@ def cancel_olt_import(olt_id: int, db: DbSession):
     olt = get_olt_or_404(db, olt_id)
     if olt.initial_import_status == "confirmed":
         raise HTTPException(status_code=409, detail="No se puede cancelar una OLT con importacion confirmada")
+    if olt.last_import_job_id:
+        job = db.get(ImportJob, olt.last_import_job_id)
+        if job and job.status != "confirmed":
+            job.status = "cancelled"
+            snapshot = db.get(ConfigSnapshot, job.raw_config_snapshot_id)
+            if snapshot and snapshot.status != "confirmed":
+                snapshot.status = "cancelled"
     olt.initial_import_status = "cancelled"
     db.commit()
     db.refresh(olt)
@@ -366,6 +373,8 @@ def initial_import_confirm(olt_id: int, import_job_id: int, db: DbSession) -> di
     olt = get_olt_or_404(db, olt_id)
     try:
         return InitialImportService(db).confirm(olt, import_job_id)
+    except SnapshotValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ImportCriticalError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     crypto_key: str = "change-me-32-byte-secret-for-prod"
+    admin_username: str | None = None
+    admin_password_hash: str | None = None
     cors_origins: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

@@ -7,6 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.drivers.errors import DriverCommandError
 from app.drivers.zte.c300_v125p3_telnet.running_config_parser import ParsedOnu, parse_running_config
+from app.drivers.zte.c300_v125p3_telnet.running_config_snapshot_validator import (
+    snapshot_checksum,
+    validate_parsed_interface_count,
+    validate_running_config_snapshot,
+)
 from app.drivers.zte.c300_v125p3_telnet.zte_onu_management_mode_parser import SERVICE_MODE_DEFINITIONS
 from app.models.entities import (
     ConfigSnapshot,
@@ -36,6 +41,10 @@ class ImportCriticalError(ValueError):
     pass
 
 
+class SnapshotValidationError(ValueError):
+    pass
+
+
 class InitialImportService:
     def __init__(self, db: Session):
         self.db = db
@@ -49,13 +58,47 @@ class InitialImportService:
 
     def create_preview_from_text(self, olt_id: int, raw_config: str, source: str = "text") -> dict:
         olt = self._get_olt_or_error(olt_id)
-        try:
-            parsed = parse_running_config(raw_config)
-            summary = self._preview_summary(parsed, olt.id)
+        snapshot = ConfigSnapshot(
+            olt_id=olt.id,
+            raw_config=raw_config,
+            source_command="show running-config",
+            status="captured",
+            checksum=snapshot_checksum(raw_config),
+        )
+        self.db.add(snapshot)
+        self.db.commit()
+        self.db.refresh(snapshot)
+        return self._create_preview_from_snapshot(olt, snapshot, source, require_final_prompt=False)
 
-            snapshot = ConfigSnapshot(olt_id=olt.id, raw_config=raw_config, source_command="show running-config")
-            self.db.add(snapshot)
-            self.db.flush()
+    def _create_preview_from_snapshot(
+        self,
+        olt: Olt,
+        snapshot: ConfigSnapshot,
+        source: str,
+        require_final_prompt: bool,
+    ) -> dict:
+        try:
+            validation = validate_running_config_snapshot(snapshot.raw_config, require_final_prompt=require_final_prompt)
+            if not validation.is_complete:
+                raise SnapshotValidationError("; ".join(validation.errors))
+            parsed = parse_running_config(snapshot.raw_config)
+            count_errors = validate_parsed_interface_count(validation, len(parsed.onus))
+            if count_errors:
+                raise SnapshotValidationError("; ".join(count_errors))
+            summary = self._preview_summary(parsed, olt.id)
+            snapshot.status = "parsed"
+            snapshot.warnings = json.dumps(
+                {
+                    "validation": validation.warnings,
+                    "parser": parsed.warnings,
+                    "legacy_incomplete": parsed.legacy_incomplete,
+                },
+                ensure_ascii=True,
+            )
+            snapshot.parser_result = json.dumps(
+                {"summary": summary, "validation": validation.metrics()},
+                ensure_ascii=True,
+            )
             job = ImportJob(
                 olt_id=olt.id,
                 status="preview",
@@ -71,7 +114,9 @@ class InitialImportService:
             self.db.commit()
             self.db.refresh(job)
             return {"import_job_id": job.id, "snapshot_id": snapshot.id, **summary}
-        except Exception:
+        except Exception as exc:
+            snapshot.status = "failed"
+            snapshot.warnings = json.dumps({"errors": [str(exc)]}, ensure_ascii=True)
             olt.initial_import_status = "failed"
             self.db.commit()
             raise
@@ -83,7 +128,7 @@ class InitialImportService:
         olt_service = OltService(self.db)
         driver = olt_service.driver_for(olt)
         try:
-            driver.connect(disable_paging=False)
+            driver.connect(disable_paging=True)
             raw_config = driver.show_running_config()
             self._log_command(olt.id, "show running-config", True, raw_config)
         except DriverCommandError as exc:
@@ -93,7 +138,17 @@ class InitialImportService:
             raise
         finally:
             driver.disconnect()
-        return self.create_preview_from_text(olt.id, raw_config, source="telnet")
+        snapshot = ConfigSnapshot(
+            olt_id=olt.id,
+            raw_config=raw_config,
+            source_command="show running-config",
+            status="captured",
+            checksum=snapshot_checksum(raw_config),
+        )
+        self.db.add(snapshot)
+        self.db.commit()
+        self.db.refresh(snapshot)
+        return self._create_preview_from_snapshot(olt, snapshot, "telnet", require_final_prompt=True)
 
     def confirm_import(self, import_job_id: int) -> dict:
         job = self.db.get(ImportJob, import_job_id)
@@ -129,13 +184,31 @@ class InitialImportService:
         snapshot = self.db.get(ConfigSnapshot, job.raw_config_snapshot_id)
         if not snapshot:
             raise ValueError("Config snapshot not found")
-
-        parsed = parse_running_config(snapshot.raw_config)
-        if parsed.critical_errors:
+        if snapshot.status != "parsed":
+            raise SnapshotValidationError(f"Snapshot no confirmable en estado {snapshot.status}")
+        if not snapshot.checksum or snapshot.checksum != snapshot_checksum(snapshot.raw_config):
+            snapshot.status = "failed"
             job.status = "failed"
             olt.initial_import_status = "failed"
             self.db.commit()
-            raise ImportCriticalError("La importacion contiene errores criticos: " + "; ".join(parsed.critical_errors))
+            raise SnapshotValidationError("Checksum del snapshot no coincide")
+
+        validation = validate_running_config_snapshot(snapshot.raw_config, require_final_prompt=job.source == "telnet")
+        if not validation.is_complete:
+            snapshot.status = "failed"
+            job.status = "failed"
+            olt.initial_import_status = "failed"
+            self.db.commit()
+            raise SnapshotValidationError("; ".join(validation.errors))
+        parsed = parse_running_config(snapshot.raw_config)
+        structural_errors = validate_parsed_interface_count(validation, len(parsed.onus))
+        if parsed.critical_errors or structural_errors:
+            errors = [*structural_errors, *parsed.critical_errors]
+            snapshot.status = "failed"
+            job.status = "failed"
+            olt.initial_import_status = "failed"
+            self.db.commit()
+            raise ImportCriticalError("La importacion contiene errores criticos: " + "; ".join(errors))
         counters = {
             "vlans_upserted": 0,
             "gpon_profiles_upserted": 0,
@@ -205,6 +278,7 @@ class InitialImportService:
             counters["onus_upserted"] += 1
 
         job.status = "confirmed"
+        snapshot.status = "confirmed"
         job.confirmed_at = datetime.now(UTC)
         olt.initial_import_status = "confirmed"
         olt.last_import_job_id = job.id

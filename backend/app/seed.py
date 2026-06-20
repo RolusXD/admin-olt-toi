@@ -1,3 +1,5 @@
+import os
+
 from app.core.database import SessionLocal
 from app.core.security import encrypt_secret
 from app.models.entities import Nap, Olt, Onu, OnuPowerHistory, PonPort, Zone
@@ -7,6 +9,10 @@ def run() -> None:
     with SessionLocal() as db:
         if db.query(Olt).first():
             return
+        olt_username = (os.getenv("SEED_OLT_USERNAME") or "").strip()
+        olt_password = os.getenv("SEED_OLT_PASSWORD") or ""
+        if not olt_username or not olt_password:
+            raise RuntimeError("SEED_OLT_USERNAME and SEED_OLT_PASSWORD are required to create demo OLT data")
         olt = Olt(
             olt_code="OLT-0001",
             name="OLT Principal ZTE C300",
@@ -15,8 +21,8 @@ def run() -> None:
             firmware="V1.2.5P3",
             ip_address="10.0.0.2",
             telnet_port=23,
-            username="admin",
-            password_encrypted=encrypt_secret("admin"),
+            username=olt_username,
+            password_encrypted=encrypt_secret(olt_password),
             status="online",
         )
         zone = Zone(name="Zona Central", description="Anillo urbano principal")

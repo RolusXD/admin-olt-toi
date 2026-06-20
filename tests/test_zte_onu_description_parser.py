@@ -48,6 +48,17 @@ def test_parser_accepts_zone_token_case_variants():
     assert parse_onu_description("zone_Zone_1_descr_cliente").zone_name == "Zone_1"
 
 
+def test_valid_nap_description_never_falls_back_to_sin_zona():
+    original = "$$$$zone_Lagunas_descr_NAP_H5_PUERTO_9_San_Roque"
+    parsed = parse_onu_description(original)
+
+    assert parsed.description_original == original
+    assert parsed.zone_name == "Lagunas"
+    assert parsed.nap_name == "H5"
+    assert parsed.nap_port_label == "9"
+    assert "missing zone" not in parsed.warnings
+
+
 def test_builder_generates_productive_compatible_description():
     description = build_onu_description(
         zone="San Roque",

@@ -16,12 +16,23 @@ Sistema OSS para administrar OLTs, ONUs, Zonas, NAPs/ODN, monitoreo GPON, aprovi
 docker compose up --build
 ```
 
-En otra terminal, aplicar migraciones y cargar datos de ejemplo:
+En otra terminal, aplicar migraciones:
 
 ```bash
 docker compose exec backend alembic upgrade head
-docker compose exec backend python -m app.seed
 ```
+
+## Administrador inicial
+
+El login no incluye credenciales predeterminadas. Genere localmente el usuario y hash del administrador:
+
+```bash
+docker compose exec backend python -m app.scripts.create_initial_admin --username admin
+```
+
+Copie `ADMIN_USERNAME` y `ADMIN_PASSWORD_HASH` a su archivo local `.env`, que no debe versionarse, y recree backend y worker. La contraseña sólo se solicita de forma interactiva y no se guarda en el repositorio.
+
+La carga opcional de datos OLT de ejemplo requiere definir localmente `SEED_OLT_USERNAME` y `SEED_OLT_PASSWORD` antes de ejecutar `python -m app.seed`.
 
 Servicios:
 
@@ -29,11 +40,6 @@ Servicios:
 - Backend: http://localhost:8000
 - Swagger: http://localhost:8000/docs
 - Health: http://localhost:8000/health
-
-## Credenciales demo
-
-- Usuario: `admin`
-- Password: `Admin123!`
 
 ## Arquitectura
 

@@ -57,6 +57,10 @@ class ConfigSnapshot(Base):
     olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
     raw_config: Mapped[str] = mapped_column(Text)
     source_command: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(30), default="captured")
+    checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parser_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

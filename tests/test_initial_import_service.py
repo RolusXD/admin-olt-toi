@@ -30,7 +30,7 @@ from app.models.entities import (
 from app.api.routes.onus import list_onus
 from app.schemas.entities import OltCreate
 from app.schemas.entities import OnuRead
-from app.services.initial_import_service import ImportCriticalError, InitialImportService
+from app.services.initial_import_service import InitialImportService, SnapshotValidationError
 from app.services.olt_service import OltService
 from app.services.provisioning_service import ProvisioningService
 
@@ -111,6 +111,10 @@ def test_preview_from_text_does_not_create_productive_records(db_session, olt, r
     assert scalar_count(db_session, Onu) == 0
     assert scalar_count(db_session, PonPort) == 0
     assert scalar_count(db_session, Vlan) == 0
+    snapshot = db_session.scalar(select(ConfigSnapshot))
+    assert snapshot.status == "parsed"
+    assert len(snapshot.checksum) == 64
+    assert snapshot.parser_result is not None
     job = db_session.scalar(select(ImportJob))
     assert job.source == "text"
     db_session.refresh(olt)
@@ -130,7 +134,13 @@ def test_card_inventory_completes_all_sixteen_physical_pon_ports(db_session, olt
         )
     )
     db_session.commit()
-    raw = "interface gpon-olt_1/2/1\nexit\n"
+    raw = """interface gpon-olt_1/2/1
+ onu 1 type BTPON sn TESTSN0001
+interface gpon-onu_1/2/1:1
+ name Cliente_Test
+ description $$$$zone_Lagunas_descr_NAP_H5_PUERTO_9_cliente
+ switchport vlan 200 tag vport 1
+"""
 
     service = InitialImportService(db_session)
     preview = service.create_preview_from_text(olt.id, raw)
@@ -147,27 +157,72 @@ def test_card_inventory_completes_all_sixteen_physical_pon_ports(db_session, olt
     assert ports[-1].sync_source == "Telnet Read-Only"
 
 
-def test_confirm_blocks_critical_parser_errors(db_session, olt):
-    raw = "interface gpon-onu_1/2/1:1\n description texto_sin_autorizacion\nexit\n"
+def test_truncated_snapshot_is_rejected_before_preview(db_session, olt, raw_config):
+    raw = raw_config[: raw_config.rfind("interface gpon-onu_")]
+    service = InitialImportService(db_session)
+
+    with pytest.raises(SnapshotValidationError):
+        service.create_preview_from_text(olt.id, raw)
+
+    snapshot = db_session.scalar(select(ConfigSnapshot))
+    assert snapshot.status == "failed"
+    assert snapshot.checksum
+    assert scalar_count(db_session, ImportJob) == 0
+    assert scalar_count(db_session, Onu) == 0
+
+
+def test_valid_snapshot_description_does_not_generate_sin_zona_warning(db_session, olt):
+    description = "$$$$zone_Lagunas_descr_NAP_H5_PUERTO_9_San_Roque_extid_TESTSN0002_authd_20260620"
+    raw = f"""interface gpon-olt_1/2/1
+ onu 2 type BTPON sn TESTSN0002
+interface gpon-onu_1/2/1:2
+ name Cliente_Test
+ description {description}
+ switchport vlan 200 tag vport 1
+"""
     service = InitialImportService(db_session)
     preview = service.create_preview_from_text(olt.id, raw)
-    assert preview["critical_errors"]
 
-    with pytest.raises(ImportCriticalError):
+    assert preview["critical_errors"] == []
+    assert preview["zones_detected"] == ["Lagunas"]
+    assert not any("SIN_ZONA" in warning for warning in preview["warnings"])
+
+    service.confirm_import(preview["import_job_id"])
+    onu = db_session.scalar(select(Onu).where(Onu.serial_number == "TESTSN0002"))
+    assert onu.description_original == description
+    assert onu.parsed_zone_name == "Lagunas"
+
+
+def test_confirm_rejects_snapshot_modified_after_preview(db_session, olt):
+    raw = """interface gpon-olt_1/2/1
+ onu 3 type BTPON sn TESTSN0003
+interface gpon-onu_1/2/1:3
+ description $$$$zone_Lagunas_descr_NAP_H5_PUERTO_9_cliente
+"""
+    service = InitialImportService(db_session)
+    preview = service.create_preview_from_text(olt.id, raw)
+    snapshot = db_session.get(ConfigSnapshot, preview["snapshot_id"])
+    snapshot.raw_config += "\ntruncated-change"
+    db_session.commit()
+
+    with pytest.raises(SnapshotValidationError, match="Checksum"):
         service.confirm_import(preview["import_job_id"])
 
     assert scalar_count(db_session, Onu) == 0
-    db_session.refresh(olt)
-    assert olt.initial_import_status == "failed"
 
 
 def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, olt, raw_config):
     preview = InitialImportService(db_session).create_preview_from_text(olt.id, raw_config)
     service = InitialImportService(db_session)
+    snapshot = db_session.get(ConfigSnapshot, preview["snapshot_id"])
+    captured_checksum = snapshot.checksum
 
     confirmed = service.confirm_import(preview["import_job_id"])
 
     assert confirmed["status"] == "confirmed"
+    db_session.refresh(snapshot)
+    assert snapshot.status == "confirmed"
+    assert snapshot.checksum == captured_checksum
     assert scalar_count(db_session, Onu) == 557
     assert scalar_count(db_session, PonPort) == 16
     assert scalar_count(db_session, Vlan) == 215
@@ -403,7 +458,7 @@ class FakeImportDriver:
         self.connected = False
 
     def connect(self, disable_paging=True):
-        assert disable_paging is False
+        assert disable_paging is True
         self.connected = True
 
     def disconnect(self):
@@ -411,7 +466,7 @@ class FakeImportDriver:
 
     def show_running_config(self):
         self.commands.append("show running-config")
-        return self.raw_config
+        return self.raw_config + "\nFTTH-PCM-ZTE1#"
 
 
 def test_preview_sources_and_telnet_read_only(db_session, olt, raw_config, monkeypatch):
@@ -426,6 +481,9 @@ def test_preview_sources_and_telnet_read_only(db_session, olt, raw_config, monke
     assert telnet_job.source == "telnet"
     assert file_job.source == "file"
     assert driver.commands == ["show running-config"]
+    telnet_snapshot = db_session.get(ConfigSnapshot, telnet_job.raw_config_snapshot_id)
+    assert telnet_snapshot.status == "parsed"
+    assert telnet_snapshot.raw_config.endswith("FTTH-PCM-ZTE1#")
     assert not any(command.startswith(("configure", "write", "reboot", "reload", "reset", "delete", "erase")) for command in driver.commands)
     log = db_session.scalar(select(DriverCommandLog).where(DriverCommandLog.command == "show running-config"))
     assert log is not None
