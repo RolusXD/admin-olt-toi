@@ -5,7 +5,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.drivers.errors import DriverCommandError
+from app.drivers.errors import DriverCommandError, DriverTimeoutError
 from app.drivers.zte.c300_v125p3_telnet.running_config_parser import ParsedOnu, parse_running_config
 from app.drivers.zte.c300_v125p3_telnet.running_config_snapshot_validator import (
     snapshot_checksum,
@@ -131,6 +131,25 @@ class InitialImportService:
             driver.connect(disable_paging=True)
             raw_config = driver.show_running_config()
             self._log_command(olt.id, "show running-config", True, raw_config)
+        except DriverTimeoutError as exc:
+            # Attach the last sanitized CLI output for diagnostics and
+            # translate into a DriverCommandError so API layers can
+            # treat it like any other command failure.
+            diagnostic_output = exc.output or ""
+            olt.initial_import_status = "failed"
+            self._log_command(
+                olt.id,
+                "show running-config",
+                False,
+                diagnostic_output,
+                str(exc),
+            )
+            self.db.commit()
+            raise DriverCommandError(
+                command="show running-config",
+                message=str(exc),
+                output=diagnostic_output,
+            )
         except DriverCommandError as exc:
             olt.initial_import_status = "failed"
             self._log_command(olt.id, exc.command, False, exc.output, exc.message)

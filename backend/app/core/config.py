@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     admin_username: str | None = None
     admin_password_hash: str | None = None
     cors_origins: list[str] = ["http://localhost:3000"]
+    telnet_diagnostic_mode: bool = True 
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

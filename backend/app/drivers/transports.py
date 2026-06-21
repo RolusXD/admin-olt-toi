@@ -3,7 +3,7 @@ import re
 from time import perf_counter, sleep
 import telnetlib
 
-from app.drivers.errors import DriverTimeoutError
+from app.drivers.errors import DriverCommandError, DriverTimeoutError
 
 
 class CliTransport(ABC):
@@ -22,7 +22,6 @@ class CliTransport(ABC):
     @abstractmethod
     def close(self) -> None:
         raise NotImplementedError
-
 
 class TelnetlibTransport(CliTransport):
     def __init__(self, host: str, port: int, timeout: int):
@@ -45,22 +44,45 @@ class TelnetlibTransport(CliTransport):
         chunks: list[bytes] = []
         more_pattern = re.compile(rb"\s*--More--\s*")
         while True:
-            index, match, chunk = self.client.expect([prompt_pattern, more_pattern], timeout)
+            try:
+                index, match, chunk = self.client.expect([prompt_pattern, more_pattern], timeout)
+            except EOFError as exc:
+                # Diagnostic path: capture the partial buffer when the
+                # remote end closes the Telnet connection unexpectedly.
+                # This is especially important during long-running
+                # commands such as `show running-config` so that
+                # TELNET_DIAGNOSTIC_MODE can surface an output excerpt.
+                raw = b"".join(chunks)
+                safe_output = self._sanitize_cli_output(raw)
+                raise DriverCommandError(
+                    command="show running-config",
+                    message="EOF received from OLT",
+                    output=safe_output or str(exc),
+                )
             if index == 0 and match:
                 chunks.append(chunk)
-                return b"".join(chunks).decode("utf-8", errors="ignore")
+                raw = b"".join(chunks)
+                return raw.decode("utf-8", errors="ignore")
             if index == 1 and match:
                 chunks.append(more_pattern.sub(b"\n", chunk))
                 self.client.write(b" ")
                 continue
-            raise DriverTimeoutError("Timed out waiting for CLI prompt")
+
+            # Timeout: attach the sanitized buffer so callers can inspect it
+            raw = b"".join(chunks)
+            safe_output = self._sanitize_cli_output(raw)
+            raise DriverTimeoutError("Timed out waiting for CLI prompt", output=safe_output)
 
     def read_until(self, expected: bytes, timeout: int) -> str:
         if not self.client:
             raise RuntimeError("Transport is not connected")
         data = self.client.read_until(expected, timeout)
         if expected not in data:
-            raise DriverTimeoutError(f"Timed out waiting for {expected.decode(errors='ignore')}")
+            safe_output = self._sanitize_cli_output(data)
+            raise DriverTimeoutError(
+                f"Timed out waiting for {expected.decode(errors='ignore')}",
+                output=safe_output,
+            )
         return data.decode("utf-8", errors="ignore")
 
     def capture_initial_banner(self, seconds: int = 15) -> tuple[str, int]:
@@ -83,3 +105,23 @@ class TelnetlibTransport(CliTransport):
         if self.client:
             self.client.close()
             self.client = None
+
+    def _sanitize_cli_output(self, raw: bytes, max_chars: int = 2000) -> str:
+        """Return a trimmed, best-effort sanitized CLI excerpt.
+
+        This is intended for diagnostics: it preserves enough context to
+        understand what the device returned right before a timeout while
+        masking obviously sensitive lines.
+        """
+
+        text = raw.decode("utf-8", errors="replace")
+        sensitive_tokens = ("password", "passwd", "community", "secret", "key", "snmp")
+        sanitized_lines: list[str] = []
+        for line in text.splitlines():
+            lower = line.lower()
+            if any(token in lower for token in sensitive_tokens):
+                sanitized_lines.append("[redacted sensitive line]")
+            else:
+                sanitized_lines.append(line)
+        sanitized = "\n".join(sanitized_lines)
+        return sanitized[:max_chars]

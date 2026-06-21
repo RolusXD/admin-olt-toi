@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import re
+from time import perf_counter
 
 from loguru import logger
 
@@ -74,7 +75,8 @@ class ZteC300V125P3TelnetDriver(DeviceDriver):
         self.last_prompt: str | None = None
 
     def connect(self, disable_paging: bool = True) -> None:
-        logger.info("Connecting to ZTE C300 {}:{}", self.host, self.port)
+        login_started = perf_counter()
+        logger.info("PHASE_LOGIN start | host={} port={}", self.host, self.port)
         assert self.transport is not None
         self.transport.connect()
         if hasattr(self.transport, "read_until"):
@@ -85,11 +87,29 @@ class ZteC300V125P3TelnetDriver(DeviceDriver):
         self.transport.write_line(self.password)
         initial_output = self.transport.read_until_prompt(self.prompt_pattern, self.timeout)
         self.last_prompt = self._extract_prompt(initial_output)
+        logger.info(
+            "PHASE_LOGIN success | elapsed_seconds={} prompt={}",
+            round(perf_counter() - login_started, 3),
+            self.last_prompt,
+        )
         if disable_paging:
+            disable_started = perf_counter()
             try:
-                self.execute("terminal length 0", read_only=False)
+                output = self.execute("terminal length 0", read_only=False)
+                logger.info(
+                    "PHASE_DISABLE_PAGING success | command={} elapsed_seconds={} prompt={} output_excerpt={}",
+                    "terminal length 0",
+                    round(perf_counter() - disable_started, 3),
+                    self.last_prompt,
+                    (output or "")[:240],
+                )
             except Exception as exc:
-                logger.warning("OLT did not accept terminal length 0: {}", exc)
+                logger.warning(
+                    "PHASE_DISABLE_PAGING error | command={} elapsed_seconds={} error={}",
+                    "terminal length 0",
+                    round(perf_counter() - disable_started, 3),
+                    exc,
+                )
 
     def disconnect(self, send_exit: bool = True) -> None:
         if self.transport:
@@ -160,16 +180,46 @@ class ZteC300V125P3TelnetDriver(DeviceDriver):
         return self.execute(SUPPORTED_COMMANDS["show_running_config"], read_only=False)
 
     def show_running_config(self) -> str:
-        output = self.execute(SUPPORTED_COMMANDS["show_running_config"], read_only=True, timeout=max(self.timeout, 120))
+        phase_started = perf_counter()
+        logger.info("PHASE_RUNNING_CONFIG_READ start | command={} timeout_s={}", "show running-config", max(self.timeout, 120))
+        try:
+            output = self.execute(
+                SUPPORTED_COMMANDS["show_running_config"],
+                read_only=True,
+                timeout=max(self.timeout, 120),
+            )
+        except DriverCommandError as exc:
+            logger.error(
+                "PHASE_RUNNING_CONFIG_READ error | command={} elapsed_seconds={} message={}",
+                exc.command,
+                round(perf_counter() - phase_started, 3),
+                exc.message,
+            )
+            raise
+        logger.info(
+            "PHASE_RUNNING_CONFIG_READ success | elapsed_seconds={} bytes={} prompt={}",
+            round(perf_counter() - phase_started, 3),
+            len(output.encode("utf-8", errors="ignore")),
+            self._extract_prompt(output),
+        )
         captured_prompt = self._extract_prompt(output)
         if not captured_prompt or not self.transport:
             raise DriverCommandError("show running-config", "No stable final prompt detected", output)
-        self.transport.write_line("")
-        prompt_confirmation = self.transport.read_until_prompt(self.prompt_pattern, self.timeout)
-        confirmed_prompt = self._extract_prompt(prompt_confirmation)
-        if confirmed_prompt != captured_prompt:
-            raise DriverCommandError("show running-config", "Final prompt could not be confirmed", output + prompt_confirmation)
-        self.last_prompt = confirmed_prompt
+        # Historically, this method sent an extra empty line and waited for a
+        # second prompt confirmation. In practice some OLTs close the Telnet
+        # session immediately after returning a complete running-config with
+        # a stable final prompt, causing EOF errors in this confirmation
+        # phase even though the snapshot is valid.
+        #
+        # We now treat a stable prompt extracted from the running-config
+        # output as sufficient success and skip the additional confirmation
+        # read to avoid surfacing false negatives.
+        logger.info(
+            "PHASE_PROMPT_CONFIRMATION skipped | command={} reason={}",
+            "show running-config",
+            "prompt_already_confirmed_from_output",
+        )
+        self.last_prompt = captured_prompt
         return output
 
     def health_check(self) -> bool:

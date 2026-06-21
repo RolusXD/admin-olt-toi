@@ -86,7 +86,7 @@ export default function OltsPage() {
 }
 
 function OltImportWizard({ initialOlt, onClose, onFinished }: { initialOlt: Olt | null; onClose: () => void; onFinished: () => void }) {
-  const [step, setStep] = useState(initialOlt ? (initialOlt.initial_import_status === "connection_tested" ? 3 : 2) : 1);
+  const [step, setStep] = useState(initialOlt ? 2 : 1);
   const [olt, setOlt] = useState<Olt | null>(initialOlt);
   const [connection, setConnection] = useState<ReadOnlyCheckResult | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);

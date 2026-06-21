@@ -2,6 +2,8 @@ from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, sta
 from sqlalchemy import func, select
 
 from app.api.deps import DbSession, get_olt_or_404
+from app.drivers.errors import DriverCommandError
+from app.core.config import settings
 from app.models.entities import ConfigSnapshot, DriverCommandLog, GponProfile, ImportJob, Olt, OltCard, OltTechnicalSettings, OltUplink, Onu, PonPort, Vlan
 from app.repositories.entities import OltRepository
 from app.schemas.entities import (
@@ -329,14 +331,30 @@ def initial_import_preview(olt_id: int, db: DbSession) -> dict:
         return InitialImportService(db).preview(olt)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
-@router.post("/{olt_id}/import/preview-from-text", response_model=ImportPreviewResponse)
-def initial_import_preview_from_text(olt_id: int, payload: ImportPreviewTextRequest, db: DbSession) -> dict:
+@router.post("/{olt_id}/import/preview-from-telnet", response_model=ImportPreviewResponse)
+def initial_import_preview_from_telnet(olt_id: int, db: DbSession) -> dict:
     try:
-        return InitialImportService(db).create_preview_from_text(olt_id, payload.raw_config, source="text")
+        return InitialImportService(db).create_preview_from_telnet(olt_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc))
+    except DriverCommandError as exc:
+        # In diagnostic mode we expose a small sanitized excerpt of the
+        # underlying CLI output to help identify prompt/pagination issues.
+        if settings.telnet_diagnostic_mode:
+            diagnostic = {
+                "command": getattr(exc, "command", ""),
+                "output_excerpt": (exc.output or "")[:500],
+            }
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": str(exc),
+                    "diagnostic": diagnostic,
+                },
+            )
+        # Default behaviour (production): simple error message without
+        # exposing CLI output.
+        raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

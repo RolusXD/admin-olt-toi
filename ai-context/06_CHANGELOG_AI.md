@@ -20,6 +20,40 @@
 - Con `DATABASE_URL=sqlite+pysqlite:///:memory:` ahora se inicializa un engine SQLite en memoria sin intentar importar el driver PostgreSQL `psycopg`, lo que permite ejecutar la suite de tests completa en entornos sin PostgreSQL instalado.
 - Verificado que la compatibilidad con Docker/producción se mantiene al no definir `DATABASE_URL`, caso en el que se sigue utilizando la URL PostgreSQL por defecto.
 
+## 2026-06-20 — Wizard de importación OLT robusto para `connection_tested`
+
+- Ajustada la inicialización del wizard `OltImportWizard` en `frontend/src/app/olts/page.tsx` para que, cuando se abra sobre una OLT existente, el paso inicial sea siempre el 2 ("Test read-only").
+- Eliminado el salto automático a `step=3` cuando `initial_import_status === "connection_tested"`, obligando a reejecutar `read-only-check` en el contexto del wizard antes de habilitar el botón "Ejecutar importacion inicial".
+- Con este cambio se evita el estado bloqueado en el que una OLT `connection_tested` abría el wizard directamente en preview con `connection = null`, `connectionValidated = false` y el botón de preview deshabilitado.
+- Ejecutado `npm run build` en `frontend`; la build Next.js/TypeScript completó con éxito confirmando que el cambio respeta el tipado y las rutas existentes.
+
+## 2026-06-20 — Instrumentación EOF en Telnet para preview desde OLT
+
+- Extendido `TelnetlibTransport.read_until_prompt` en `backend/app/drivers/transports.py` para capturar explícitamente `EOFError` de `telnetlib.expect` mientras se espera el prompt.
+- Ante un EOF inesperado, ahora se acumulan los `chunks` recibidos, se sanea la salida con `_sanitize_cli_output` y se lanza un `DriverCommandError(command="show running-config", message="EOF received from OLT", output=<excerpt>)`.
+- Esto permite que el endpoint `POST /olts/{id}/import/preview-from-telnet` entre en el bloque `except DriverCommandError` y, con `TELNET_DIAGNOSTIC_MODE=true`, devuelva `detail.diagnostic.output_excerpt` con un fragmento de la salida real justo antes del cierre de la sesión Telnet.
+- Añadido el test `tests/test_telnet_eof_diagnostic.py` que valida que un cliente Telnet simulado que lanza `EOFError("telnet connection closed")` provoca un `DriverCommandError` con `command="show running-config"` y el mensaje esperado.
+- Ejecutado `DATABASE_URL=sqlite+pysqlite:///:memory: pytest`; la suite completa pasó con 106/106 tests, confirmando que la instrumentación no rompe la lógica existente.
+
+## 2026-06-20 — Logging por fases en driver ZTE C300 para preview Telnet
+
+- Añadido logging estructurado por fases en `ZteC300V125P3TelnetDriver` (`backend/app/drivers/zte/c300_v125p3_telnet/driver.py`) para distinguir claramente:
+  - `PHASE_LOGIN` (conexión y login inicial, incluyendo prompt detectado y tiempo transcurrido).
+  - `PHASE_DISABLE_PAGING` (ejecución de `terminal length 0`, con prompt y un `output_excerpt` limitado).
+  - `PHASE_RUNNING_CONFIG_READ` (ejecución de `show running-config`, con bytes leídos, prompt final y tiempo total).
+  - `PHASE_PROMPT_CONFIRMATION` (envío de línea vacía posterior y confirmación del prompt final).
+- Los logs incluyen `elapsed_seconds`, `command` y, cuando aplica, el `prompt` detectado y un extracto de salida, sin cambiar la lógica funcional ni el manejo de excepciones existente.
+- Estas trazas permiten saber si un EOF o un `DriverCommandError` se producen durante la lectura del running-config o en la fase de confirmación del prompt.
+- Añadido el test `tests/test_zte_c300_phased_logging.py` con un `FakeTelnetClient` que simula prompts y salida de `show running-config` para verificar que `show_running_config` sigue funcionando correctamente y que los errores se siguen propagando como `DriverCommandError`.
+- Ejecutado `DATABASE_URL=sqlite+pysqlite:///:memory: pytest`; la suite completa pasó con 108/108 tests tras añadir estos tests adicionales.
+
+## 2026-06-21 — Evitar falsos negativos en confirmación de prompt ZTE
+
+- Ajustado `ZteC300V125P3TelnetDriver.show_running_config` para tratar un `show running-config` con prompt final estable como éxito suficiente sin requerir una confirmación extra del prompt mediante envío de línea vacía.
+- Eliminada la lectura adicional que podía provocar `EOF received from OLT` pese a haber capturado un snapshot completo y válido; ahora se registra un log `PHASE_PROMPT_CONFIRMATION skipped` cuando el prompt ya se ha confirmado a partir del propio output.
+- Actualizado `tests/test_zte_c300_phased_logging.py` para validar que `show_running_config` devuelve la salida cuando el script de Telnet sólo proporciona un prompt final estable, manteniendo el test de error cuando `DriverCommandError` se produce durante la fase de lectura.
+- Ejecutado `DATABASE_URL=sqlite+pysqlite:///:memory: pytest -q`; la suite completa sigue pasando con 108/108 tests, confirmando que el cambio no rompe flujos de importación ni de monitoreo.
+
 ## 2026-06-20
 
 - Removed the hardcoded V1 `admin/Admin123!` login and replaced it with environment-backed username and `pbkdf2_sha256` password hash verification.

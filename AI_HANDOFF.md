@@ -55,6 +55,13 @@ Also read `ai-context/02_ARCHITECTURE.md` for architectural work and `ai-context
 - No real OLT access was performed for the snapshot refactor or this handoff preparation.
 - Parser de descripciones ZTE ajustado para aceptar `zone` con espacios/guiones y evitar falsos `SIN_ZONA`; tests dedicados pasan (`pytest tests/test_zte_onu_description_parser.py`).
 
+### ZTE C300 Telnet driver – running-config y confirmación de prompt
+
+- El driver `ZteC300V125P3TelnetDriver.show_running_config` captura `show running-config` con un timeout mínimo de 120 segundos y valida la presencia de un prompt final estable en la salida.
+- La fase de confirmación extra mediante envío de línea vacía (`PHASE_PROMPT_CONFIRMATION`) se ha simplificado: si `_extract_prompt(output)` devuelve un prompt válido, se considera éxito suficiente y no se fuerza una segunda lectura que pueda provocar `EOF received from OLT` pese a snapshot completo.
+- Se mantiene el logging por fases (`PHASE_LOGIN`, `PHASE_DISABLE_PAGING`, `PHASE_RUNNING_CONFIG_READ` y un log `PHASE_PROMPT_CONFIRMATION skipped` cuando el prompt ya viene confirmado en el output).
+- Los tests `tests/test_zte_c300_phased_logging.py` validan tanto el caso de éxito con un único prompt como la propagación de `DriverCommandError` cuando el error ocurre durante la lectura del running-config.
+
 ## Recommended Next Task
 
 Completar la rotación de los valores JWT/crypto/DB de desarrollo por secretos gestionados para despliegue y extender el escaneo de secretos a pre-commit hooks antes del rollout a producción.
