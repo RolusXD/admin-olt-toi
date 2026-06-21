@@ -54,6 +54,18 @@ Servicios:
 - `frontend/src/components`: dashboard, modulos y UI.
 - `frontend/src/services`: cliente API.
 
+## Escaneo de secretos (local)
+
+Ejecute Gitleaks antes de hacer push para verificar que no haya credenciales accidentales:
+
+```bash
+gitleaks detect --config gitleaks.toml --redact --report-format sarif --report-path reports/gitleaks.sarif
+```
+
+- Instale Gitleaks siguiendo la [documentación oficial](https://github.com/gitleaks/gitleaks).
+- La carpeta `reports/` puede crearse automáticamente; el archivo SARIF se sobrescribe en cada ejecución y no debe versionarse.
+- Si no puede ejecutar Gitleaks localmente, confíe en el workflow `security-scans` de GitHub Actions, que valida cada push y pull request.
+
 ## Driver V1
 
 El driver `zte_c300_v125p3_telnet` implementa `DeviceDriver` con:

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import re
 
+ZONE_STOP_PATTERN = re.compile(r"(?i)(?:^|[$_\s-])(?:descr|nap|puerto|odb|odn|extid|authd)(?=[$_\s-]|$)")
+
 
 @dataclass(frozen=True)
 class ParsedOnuDescription:
@@ -24,7 +26,7 @@ def parse_onu_description(value: str | None) -> ParsedOnuDescription:
     description = re.sub(r"^\s*description\s+", "", original, flags=re.IGNORECASE).strip()
     warnings: list[str] = []
 
-    zone = _find_between(description, "zone", ["descr", "nap", "puerto", "odb", "odn", "extid", "authd"])
+    zone = _find_zone(description)
     authd_raw = _find_after(description, "authd")
     extid = _find_between(description, "extid", ["authd"])
     odb = _find_odb(description)
@@ -82,11 +84,24 @@ def _find_between(value: str, token: str, stop_tokens: list[str]) -> str | None:
         return None
     begin = start.end()
     end = len(value)
+    remainder = value[begin:]
     for stop in stop_tokens:
-        match = _token_match(value[begin:], stop)
+        match = _token_match(remainder, stop)
         if match:
             end = min(end, begin + match.start())
     return value[begin:end].strip(" _-")
+
+
+def _find_zone(value: str) -> str | None:
+    start = _token_match(value, "zone")
+    if not start:
+        return None
+    tail = value[start.end():]
+    tail = tail.lstrip(" $_-:")
+    stop = ZONE_STOP_PATTERN.search(tail)
+    segment = tail[: stop.start()] if stop else tail
+    segment = segment.rstrip(" $_-:")
+    return segment or None
 
 
 def _find_after(value: str, token: str) -> str | None:
@@ -98,15 +113,17 @@ def _find_after(value: str, token: str) -> str | None:
 
 def _token_match(value: str, token: str) -> re.Match[str] | None:
     if token == "puerto":
-        pattern = r"(?i)(?:^|[$_\s])(?:puerto|puero|p)(?:[_\s]*)"
+        pattern = r"(?i)(?:^|[$_\s-])(?:puerto|puero|p)(?:[_\s]*)"
     elif token == "nap":
-        pattern = r"(?i)(?:^|[$_\s])(?:nap|nao)(?:[_\s]*)"
+        pattern = r"(?i)(?:^|[$_\s-])(?:nap|nao)(?:[_\s]*)"
     elif token == "odb":
-        pattern = r"(?i)(?:^|[$_\s])(?:odb)(?:[_\s]*)"
+        pattern = r"(?i)(?:^|[$_\s-])(?:odb)(?:[_\s]*)"
     elif token == "odn":
-        pattern = r"(?i)(?:^|[$_\s])(?:odn)(?:[_\s]*)"
+        pattern = r"(?i)(?:^|[$_\s-])(?:odn)(?:[_\s]*)"
+    elif token == "zone":
+        pattern = r"(?i)(?:^|[$_\s-])zone(?:[_\s-]*)"
     else:
-        pattern = rf"(?i)(?:^|[$_\s]){re.escape(token)}(?:[_\s]*)"
+        pattern = rf"(?i)(?:^|[$_\s-]){re.escape(token)}(?:[_\s]*)"
     return re.search(pattern, value)
 
 
@@ -179,6 +196,9 @@ def _find_address(
 def _clean(value: str | None) -> str | None:
     if value is None:
         return None
-    cleaned = re.sub(r"[_\s]+", "_", value.strip(" _-"))
+    stripped = value.strip(" _-")
+    if not stripped:
+        return None
+    cleaned = re.sub(r"[_\s]+", "_", stripped)
     cleaned = re.sub(r"_+", "_", cleaned).strip("_")
-    return cleaned or None
+    return cleaned or stripped

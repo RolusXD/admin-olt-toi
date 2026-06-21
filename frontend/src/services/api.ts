@@ -4,6 +4,7 @@ import type {
   DashboardSummary,
   DriverCommandLog,
   ImportConfirmResult,
+  ImportJob,
   ImportPreview,
   Nap,
   NapPort,
@@ -143,6 +144,7 @@ export const api = {
   },
   previewImportFromTelnet: (oltId: number) =>
     request<ImportPreview>(`/olts/${oltId}/import/preview-from-telnet`, { method: "POST" }),
+  importJob: (jobId: number | string) => request<ImportJob>(`/import/jobs/${jobId}`),
   confirmImport: (importJobId: number) =>
     request<ImportConfirmResult>(`/import-jobs/${importJobId}/confirm`, { method: "POST" }),
   createOlt: (payload: Record<string, unknown>) =>

@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from app.drivers.zte.c300_v125p3_telnet.zte_onu_description_builder import build_onu_description
 from app.drivers.zte.c300_v125p3_telnet.zte_onu_description_parser import parse_onu_description
 

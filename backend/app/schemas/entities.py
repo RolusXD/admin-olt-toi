@@ -1053,5 +1053,8 @@ class ImportJobRead(BaseModel):
     source: str
     raw_config_snapshot_id: int
     parsed_summary: dict
+    snapshot_status: str | None = None
+    snapshot_warnings: list[str] | None = None
     created_at: datetime
-    confirmed_at: datetime | None
+    updated_at: datetime | None = None
+    confirmed_at: datetime | None = None

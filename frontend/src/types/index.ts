@@ -451,6 +451,35 @@ export type ImportPreview = {
   critical_errors: string[];
 };
 
+export type ImportJob = {
+  id: number;
+  olt_id: number;
+  status: string;
+  source: string;
+  raw_config_snapshot_id: number;
+  parsed_summary: {
+    vlans: number;
+    tcont_profiles: number;
+    traffic_profiles: number;
+    gpon_profiles: number;
+    onu_types: number;
+    pon_ports: number;
+    uplinks?: number;
+    onus: number;
+    onu_management_modes?: number;
+    zones_detected: string[];
+    naps_detected: string[];
+    warnings: string[];
+    legacy_incomplete?: string[];
+    critical_errors?: string[];
+  };
+  snapshot_status?: string | null;
+  snapshot_warnings?: string[] | null;
+  created_at: string;
+  updated_at?: string | null;
+  confirmed_at?: string | null;
+};
+
 export type ImportConfirmResult = {
   import_job_id: number;
   status: string;

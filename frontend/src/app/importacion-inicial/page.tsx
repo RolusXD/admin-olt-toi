@@ -1,14 +1,14 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, FileText, ShieldCheck, Upload } from "lucide-react";
+import { CheckCircle2, FileText, Loader2, ShieldCheck, Upload } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/panel";
 import { EnvironmentBadge } from "@/components/ui/environment-badge";
 import { api } from "@/services/api";
 import { useApiData } from "@/hooks/useApiData";
-import type { ImportConfirmResult, ImportPreview, Olt, OltInventorySummary } from "@/types";
+import type { ImportConfirmResult, ImportJob, ImportPreview, Olt, OltInventorySummary } from "@/types";
 
 const emptyPreviewText = "";
 
@@ -23,6 +23,9 @@ export default function InitialImportPage() {
   const [inventorySummary, setInventorySummary] = useState<OltInventorySummary | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [previewStage, setPreviewStage] = useState<PreviewStage>("idle");
+  const [importJob, setImportJob] = useState<ImportJob | null>(null);
+  const [jobRefreshing, setJobRefreshing] = useState(false);
 
   const oltId = useMemo(() => Number(selectedOltId || olts.data[0]?.id || 0), [selectedOltId, olts.data]);
   const selectedOlt = olts.data.find((olt) => olt.id === oltId) ?? null;
@@ -47,17 +50,24 @@ export default function InitialImportPage() {
     setFile(event.target.files?.[0] ?? null);
     setPreview(null);
     setConfirmResult(null);
+    setImportJob(null);
   }
 
   async function runTextPreview(event: FormEvent) {
     event.preventDefault();
     setError(null);
     setConfirmResult(null);
+    setImportJob(null);
     setLoading("text");
+    setPreviewStage("analysing");
     try {
-      setPreview(await api.previewImportFromText(oltId, rawConfig));
+      const result = await api.previewImportFromText(oltId, rawConfig);
+      setPreview(result);
+      void refreshImportJob(result.import_job_id);
+      setPreviewStage("ready");
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "No se pudo crear el preview");
+      setPreviewStage("error");
     } finally {
       setLoading(null);
     }
@@ -67,11 +77,17 @@ export default function InitialImportPage() {
     if (!file) return;
     setError(null);
     setConfirmResult(null);
+    setImportJob(null);
     setLoading("file");
+    setPreviewStage("analysing");
     try {
-      setPreview(await api.previewImportFromFile(oltId, file));
+      const result = await api.previewImportFromFile(oltId, file);
+      setPreview(result);
+      void refreshImportJob(result.import_job_id);
+      setPreviewStage("ready");
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "No se pudo leer el archivo");
+      setPreviewStage("error");
     } finally {
       setLoading(null);
     }
@@ -80,11 +96,18 @@ export default function InitialImportPage() {
   async function runTelnetPreview() {
     setError(null);
     setConfirmResult(null);
+    setImportJob(null);
     setLoading("telnet");
+    setPreviewStage("preparing");
     try {
-      setPreview(await api.previewImportFromTelnet(oltId));
+      setPreviewStage("connecting");
+      const result = await api.previewImportFromTelnet(oltId);
+      setPreview(result);
+      void refreshImportJob(result.import_job_id);
+      setPreviewStage("ready");
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "No se pudo leer la OLT");
+      setPreviewStage("error");
     } finally {
       setLoading(null);
     }
@@ -96,11 +119,23 @@ export default function InitialImportPage() {
     setLoading("confirm");
     try {
       setConfirmResult(await api.confirmImport(preview.import_job_id));
+      await refreshImportJob(preview.import_job_id);
       setInventorySummary(await api.oltInventorySummary(oltId));
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "No se pudo confirmar la importacion");
     } finally {
       setLoading(null);
+    }
+  }
+
+   async function refreshImportJob(jobId: number) {
+    setJobRefreshing(true);
+    try {
+      setImportJob(await api.importJob(jobId));
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "No se pudo actualizar el estado del import job");
+    } finally {
+      setJobRefreshing(false);
     }
   }
 
@@ -125,6 +160,7 @@ export default function InitialImportPage() {
                   setSelectedOltId(event.target.value);
                   setPreview(null);
                   setConfirmResult(null);
+                  setPreviewStage("idle");
                 }}
               >
                 {olts.data.map((olt) => (
@@ -143,6 +179,7 @@ export default function InitialImportPage() {
                     setSelectedOltId("");
                     setPreview(null);
                     setConfirmResult(null);
+                    setPreviewStage("idle");
                   }}
                 />
                 Mostrar laboratorio
@@ -164,11 +201,12 @@ export default function InitialImportPage() {
               <ShieldCheck className="h-4 w-4" /> Produccion: Importar desde OLT real
             </div>
             <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
-              Esta operación no modifica la OLT. Solo ejecuta show running-config en modo read-only.
+              Esta operación no modifica la OLT. Solo ejecuta show running-config en modo read-only y genera un preview.
             </div>
             <Button type="button" onClick={runTelnetPreview} disabled={!oltId || loading !== null}>
               <ShieldCheck className="h-4 w-4" /> Importar desde OLT real
             </Button>
+            <PreviewProgress stage={previewStage} loading={loading === "telnet"} />
           </div>
         </Panel>
 
@@ -246,6 +284,15 @@ export default function InitialImportPage() {
               <PreviewList title="Zonas detectadas" values={preview.zones_detected} />
               <PreviewList title="NAPs detectadas" values={preview.naps_detected} />
               <PreviewList title="Warnings" values={preview.warnings} />
+            </div>
+
+            <div className="mt-6">
+              <ImportJobState
+                job={importJob}
+                preview={preview}
+                refreshing={jobRefreshing}
+                onRefresh={() => refreshImportJob(preview.import_job_id)}
+              />
             </div>
           </Panel>
         )}
@@ -334,6 +381,120 @@ function PreviewList({ title, values }: { title: string; values: string[] }) {
         ) : (
           <span className="text-sm text-muted">Sin datos</span>
         )}
+      </div>
+    </div>
+  );
+}
+
+type PreviewStage = "idle" | "preparing" | "connecting" | "analysing" | "ready" | "error";
+
+function PreviewProgress({ stage, loading }: { stage: PreviewStage; loading: boolean }) {
+  const steps: Array<{ key: PreviewStage; label: string }> = [
+    { key: "preparing", label: "Preparando importacion..." },
+    { key: "connecting", label: "Conectando y leyendo configuracion de la OLT..." },
+    { key: "analysing", label: "Analizando configuracion y generando preview..." },
+    { key: "ready", label: "Preview generado correctamente." },
+  ];
+
+  if (stage === "idle") {
+    return (
+      <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+        Presiona "Importar desde OLT real" para iniciar la importacion inicial.
+      </div>
+    );
+  }
+
+  const activeIndex = stage === "error" ? -1 : steps.findIndex((step) => step.key === stage);
+
+  return (
+    <div className="space-y-2 rounded-md border border-slate-200 bg-white p-3 text-sm">
+      {stage === "error" && (
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-red-800">
+          Error durante la generación del preview.
+        </div>
+      )}
+      <ul className="space-y-2">
+        {steps.map((step, index) => {
+          const isActive = index === activeIndex;
+          const isCompleted = activeIndex > index;
+          return (
+            <li
+              key={step.key}
+              className={`flex items-start gap-2 rounded-md border px-3 py-2 text-xs sm:text-sm ${
+                isActive
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                  : isCompleted
+                    ? "border-slate-200 bg-slate-50 text-slate-700"
+                    : "border-slate-100 bg-white text-slate-500"
+              }`}
+            >
+              {isActive ? <Loader2 className="mt-0.5 h-3.5 w-3.5 animate-spin" /> : <span className="mt-0.5 h-3.5 w-3.5 rounded-full border border-current" />}
+              <span>{step.label}</span>
+            </li>
+          );
+        })}
+      </ul>
+      {loading && stage !== "ready" && stage !== "error" && (
+        <p className="text-xs text-slate-500">Esta etapa no modifica la OLT; puedes cerrar esta ventana y reintentar si algo falla.</p>
+      )}
+    </div>
+  );
+}
+
+type ImportJobStateProps = {
+  job: ImportJob | null;
+  preview: ImportPreview;
+  refreshing: boolean;
+  onRefresh: () => void;
+};
+
+function ImportJobState({ job, preview, refreshing, onRefresh }: ImportJobStateProps) {
+  const summary = job?.parsed_summary ?? null;
+  const warnings = (job?.snapshot_warnings && job.snapshot_warnings.length > 0
+    ? job.snapshot_warnings
+    : summary?.warnings) ?? [];
+  const criticalErrors = summary?.critical_errors ?? [];
+
+  const items: Array<[string, number]> = [
+    ["ONUs", summary?.onus ?? preview.onus],
+    ["VLANs", summary?.vlans ?? preview.vlans],
+    ["Perfiles", summary?.gpon_profiles ?? preview.gpon_profiles],
+    ["PONs", summary?.pon_ports ?? preview.pon_ports],
+    ["Uplinks", summary?.uplinks ?? preview.uplinks ?? 0],
+    ["NAPs", (summary?.naps_detected ?? preview.naps_detected).length],
+    ["Zonas", (summary?.zones_detected ?? preview.zones_detected).length],
+    ["Warnings", warnings.length],
+    ["Errores", criticalErrors.length],
+  ];
+
+  return (
+    <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-900">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold uppercase text-muted">Estado del import job</div>
+          <div className="text-sm text-slate-900">
+            Job: <span className="font-medium">{job?.status ?? "desconocido"}</span>
+            {" · "}
+            Snapshot: <span className="font-medium">{job?.snapshot_status ?? "desconocido"}</span>
+          </div>
+        </div>
+        <Button type="button" className="h-8 px-2 text-xs" variant="secondary" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? "Actualizando..." : "Actualizar estado"}
+        </Button>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        {items.map(([label, value]) => (
+          <div key={label} className="rounded-md border border-slate-200 bg-white p-3">
+            <div className="text-xs text-muted">{label}</div>
+            <div className="text-lg font-semibold text-slate-950">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <PreviewList title="Warnings reales" values={warnings} />
+        <PreviewList title="Errores" values={criticalErrors.map((value) => String(value))} />
       </div>
     </div>
   );

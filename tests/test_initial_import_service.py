@@ -28,9 +28,13 @@ from app.models.entities import (
     Zone,
 )
 from app.api.routes.onus import list_onus
-from app.schemas.entities import OltCreate
+from app.schemas.entities import ImportJobRead, OltCreate
 from app.schemas.entities import OnuRead
-from app.services.initial_import_service import InitialImportService, SnapshotValidationError
+from app.services.initial_import_service import (
+    ImportCriticalError,
+    InitialImportService,
+    SnapshotValidationError,
+)
 from app.services.olt_service import OltService
 from app.services.provisioning_service import ProvisioningService
 
@@ -340,6 +344,35 @@ def test_confirm_import_creates_expected_records_and_is_idempotent(db_session, o
     assert ProvisioningService(db_session).can_provision(olt.id) is True
 
 
+@pytest.mark.parametrize("status", ["cancelled", "failed", "processing"])
+def test_confirm_import_rejected_for_non_preview_status(db_session, olt, raw_config, status):
+    service = InitialImportService(db_session)
+    preview = service.create_preview_from_text(olt.id, raw_config)
+    job = db_session.get(ImportJob, preview["import_job_id"])
+    job.status = status
+    db_session.commit()
+
+    with pytest.raises(ImportCriticalError, match=status):
+        service.confirm_import(job.id)
+
+    assert scalar_count(db_session, Onu) == 0
+
+
+def test_confirm_import_allows_idempotent_confirmed_job(db_session, olt, raw_config):
+    service = InitialImportService(db_session)
+    preview = service.create_preview_from_text(olt.id, raw_config)
+    result = service.confirm_import(preview["import_job_id"])
+    assert result["status"] == "confirmed"
+
+    job = db_session.get(ImportJob, preview["import_job_id"])
+    assert job.status == "confirmed"
+
+    second = service.confirm_import(preview["import_job_id"])
+    assert second["status"] == "confirmed"
+    assert second["vlans_upserted"] == 0
+    assert second["onus_upserted"] == 0
+
+
 def test_import_keeps_identical_ftth_inventory_isolated_by_olt(db_session, olt, raw_config):
     second_olt = Olt(
         olt_code="OLT-TEST-02",
@@ -518,6 +551,30 @@ def test_reimport_does_not_delete_existing_records(db_session, olt, raw_config):
     service.confirm_import(second["import_job_id"])
 
     assert db_session.scalar(select(Onu).where(Onu.serial_number == "MANUAL123")) is not None
+
+
+def test_import_job_read_includes_snapshot_context(db_session, olt, raw_config):
+    service = InitialImportService(db_session)
+    preview = service.create_preview_from_text(olt.id, raw_config)
+
+    # When retrieving via the service, the job payload should include
+    # snapshot_status, parsed_summary and timestamps compatible with
+    # ImportJobRead.
+    payload = service.get_job(preview["import_job_id"])
+    job = ImportJobRead.model_validate(payload)
+
+    assert job.id == preview["import_job_id"]
+    assert job.olt_id == olt.id
+    assert job.status == "preview"
+    assert job.raw_config_snapshot_id == preview["snapshot_id"]
+    assert job.parsed_summary["onus"] == preview["onus"]
+    assert job.snapshot_status == "parsed"
+    # We expect at least some warning structure serialized from the snapshot
+    # even if the concrete messages may evolve with parser improvements.
+    assert job.snapshot_warnings is None or isinstance(job.snapshot_warnings, list)
+    assert job.created_at is not None
+    # ImportJob does not maintain an explicit updated_at timestamp.
+    assert job.confirmed_at is None
 
 
 def test_onus_response_includes_olt_identity_and_filter_by_olt_code(db_session, olt, raw_config):

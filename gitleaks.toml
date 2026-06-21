@@ -1,0 +1,13 @@
+title = "toi-olt-manager"
+extends = "gitleaks://github-classic"
+
+[allowlist]
+description = "Allow only explicit local placeholders"
+regexes = [
+    '''CHANGEME_LOCAL_ONLY_[A-Z0-9_]+''',
+    '''salt-placeholder''',
+    '''hash-placeholder''',
+    '''local-admin-placeholder''',
+    '''seed-olt-user-placeholder''',
+    '''seed-olt-pass-placeholder'''
+]

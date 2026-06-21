@@ -181,6 +181,11 @@ class InitialImportService:
                 "warnings": json.loads(job.parsed_summary_json).get("warnings", []),
             }
 
+        if job.status != "preview":
+            raise ImportCriticalError(
+                f"Import job en estado '{job.status}' no puede confirmarse"
+            )
+
         snapshot = self.db.get(ConfigSnapshot, job.raw_config_snapshot_id)
         if not snapshot:
             raise ValueError("Config snapshot not found")
@@ -733,6 +738,42 @@ class InitialImportService:
         port.customer_name_snapshot = onu.customer_name
 
     def _job_to_dict(self, job: ImportJob) -> dict:
+        """Serialize an ImportJob with its persisted preview context.
+
+        The job stores a JSON summary of the preview in ``parsed_summary_json`` and
+        is linked to a ConfigSnapshot that tracks the snapshot lifecycle.
+
+        This method provides a stable contract for ImportJobRead so that
+        frontend callers can inspect preview progress and snapshot health
+        without re-running any parsing or validation logic.
+        """
+        snapshot = self.db.get(ConfigSnapshot, job.raw_config_snapshot_id)
+        snapshot_status: str | None = snapshot.status if snapshot else None
+
+        snapshot_warnings: list[str] | None = None
+        if snapshot and snapshot.warnings:
+            try:
+                data = json.loads(snapshot.warnings)
+            except Exception:
+                # Fallback to raw text if the warnings payload is not valid JSON.
+                snapshot_warnings = [snapshot.warnings]
+            else:
+                # ``warnings`` was intentionally stored as a structured JSON
+                # document during preview creation. We expose a flattened list
+                # of messages for the minimal UI while keeping the underlying
+                # structure unchanged.
+                if isinstance(data, dict):
+                    items: list[str] = []
+                    for key in ("validation", "parser", "legacy_incomplete", "errors"):
+                        value = data.get(key)
+                        if isinstance(value, list):
+                            items.extend(str(item) for item in value)
+                    snapshot_warnings = items
+                elif isinstance(data, list):
+                    snapshot_warnings = [str(item) for item in data]
+                else:
+                    snapshot_warnings = [str(data)]
+
         return {
             "id": job.id,
             "olt_id": job.olt_id,
@@ -740,7 +781,11 @@ class InitialImportService:
             "source": job.source,
             "raw_config_snapshot_id": job.raw_config_snapshot_id,
             "parsed_summary": json.loads(job.parsed_summary_json),
+            "snapshot_status": snapshot_status,
+            "snapshot_warnings": snapshot_warnings,
             "created_at": job.created_at,
+            # ImportJob does not currently track ``updated_at``; ImportJobRead
+            # models this as optional and defaults it to null when absent.
             "confirmed_at": job.confirmed_at,
         }
 
