@@ -1,5 +1,28 @@
 # AI Changelog
 
+## 2026-06-21 — Fase A1: Estado estable para data_quality_status en import inicial
+
+- Corregido `backend/app/services/initial_import_service.py` para:
+  - Eliminar imports duplicados de `OnuDataQualityService`.
+  - Restaurar la iteración sobre `parsed.uplinks` con `_upsert_uplink` y el contador `uplinks_upserted`, solucionando el `IndentationError` y manteniendo intacta la lógica histórica de importación ZTE.
+  - Integrar `OnuDataQualityService` dentro de `_confirm_job` justo después del upsert de cada `Onu`, evaluando `onu.data_quality_status` sin bloquear la importación ni modificar otros flujos.
+- Confirmado que `python -m compileall backend/app` se ejecuta sin errores tras los cambios.
+- Añadido `tests/test_onu_data_quality_service.py` con pruebas unitarias mínimas que validan:
+  - Respeto del estado manual `blocked`.
+  - Clasificación `complete` cuando todos los campos críticos y recomendados están presentes.
+  - Clasificación `needs_review` cuando sólo faltan campos recomendados (`external_id`, `auth_date`).
+  - Clasificación `legacy_incomplete` cuando faltan uno o más campos críticos, incluyendo la distinción de zonas `SIN_ZONA`.
+- Ejecutado `pytest tests/test_onu_data_quality_service.py -q`; 4/4 tests pasando.
+
+## 2026-06-21 — Ajustes EFO Calidad de Datos y Gobierno OLT (documental)
+
+- Actualizada `docs/EFO_CALIDAD_DATOS_Y_GOBIERNO_OLT.md` para dejar explícito que:
+  - No se permite crear una `Onu` real con información incompleta.
+  - El trabajo parcial de provisión debe guardarse exclusivamente como `ProvisioningPlan` en estado `draft`; el concepto de borrador aplica al plan, no a la entidad `Onu`.
+  - La eliminación de una OLT en estado `preview_created` debe incluir snapshots, import jobs, previews, logs temporales y cualquier artefacto de importación asociado, con el objetivo de evitar residuos operativos.
+  - `ProvisioningTemplate` puede ser global sólo si no contiene referencias técnicas específicas de una OLT (VLAN IDs, Zone IDs, Nap/NapPort IDs, Profile/SpeedProfile IDs u otras FKs por OLT) y se limita a estructura CLI genérica + placeholders.
+- Añadida en `ai-context/05_TODO.md` la sección "Data Quality Roadmap (EFO – Fase A)" para preparar la implementación gradual de `data_quality_status`, evaluador de calidad documental y métricas de dashboard sin modificar todavía backend ni frontend.
+
 ## 2026-06-20 — Import Preview Job State
 
 - Extendido el contrato `ImportJobRead` para incluir `snapshot_status`, `snapshot_warnings`, `parsed_summary`, `created_at` y `confirmed_at` a partir de `ImportJob` + `ConfigSnapshot` sin cambiar el parser ni la provisión.

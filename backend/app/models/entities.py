@@ -399,6 +399,8 @@ class Onu(Base, TimestampMixin):
     service_mode_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     source: Mapped[str] = mapped_column(String(40), default="manual")
     import_source: Mapped[str] = mapped_column(String(40), default="manual")
+    # Calidad documental heredada o calculada (complete / needs_review / legacy_incomplete / blocked)
+    data_quality_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     olt: Mapped[Olt] = relationship(back_populates="onus")
     power_history: Mapped[list["OnuPowerHistory"]] = relationship(back_populates="onu", cascade="all, delete-orphan")

@@ -23,6 +23,12 @@
   - ✅ Parser de descripciones ZTE ajustado para no degradar zonas válidas (`zone_Lagunas`, variantes con espacios o guiones) y reducir falsos `SIN_ZONA`.
 - Add a report for legacy incomplete metadata grouped by OLT and category.
 
+## Data Quality Roadmap (EFO – Fase A)
+
+- Introducir `data_quality_status` en el modelo de ONU y un evaluador de calidad documental por OLT, siguiendo la EFO de "Calidad de Datos, Catálogos Técnicos y Gobierno de OLT".
+- Definir un primer conjunto de métricas y endpoints de sólo lectura para un dashboard básico de calidad (sin bloquear provisión existente).
+- Alinear con operaciones qué campos mínimos serán obligatorios para nuevas ONUs antes de activar validaciones duras en backend/frontend.
+
 ## Operations
 
 - Add retention policies for command logs, power history and raw snapshots.

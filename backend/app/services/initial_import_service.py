@@ -35,6 +35,7 @@ from app.models.entities import (
     Zone,
 )
 from app.services.event_service import EventService
+from app.services.onu_data_quality_service import OnuDataQualityService
 
 
 class ImportCriticalError(ValueError):
@@ -49,6 +50,7 @@ class InitialImportService:
     def __init__(self, db: Session):
         self.db = db
         self.events = EventService(db)
+        self.data_quality = OnuDataQualityService(db)
 
     IMPORT_SOURCE_BY_JOB_SOURCE = {
         "telnet": "telnet_running_config",
@@ -269,6 +271,7 @@ class InitialImportService:
         for uplink in parsed.uplinks:
             self._upsert_uplink(olt.id, uplink)
             counters["uplinks_upserted"] += 1
+
         self._ensure_technical_settings(olt.id)
         management_modes = {item.onu_interface: item for item in parsed.onu_management_modes}
         self._sync_onu_service_modes(olt, parsed.onu_management_modes)
@@ -299,6 +302,9 @@ class InitialImportService:
             )
             if nap and persisted.nap_port:
                 self._occupy_nap_port(nap, persisted)
+            # Fase A1: calcular calidad documental para cada ONU importada
+            # sin bloquear la importación ni afectar provisión.
+            self.data_quality.evaluate(persisted)
             counters["onus_upserted"] += 1
 
         job.status = "confirmed"
