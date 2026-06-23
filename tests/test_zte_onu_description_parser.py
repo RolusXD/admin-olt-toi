@@ -61,6 +61,20 @@ def test_valid_nap_description_never_falls_back_to_sin_zona():
     assert "missing zone" not in parsed.warnings
 
 
+def test_zone_and_authd_are_parsed_without_descr_or_nap_prefix():
+    parsed = parse_onu_description("description zone_Lagunas_authd_20260225")
+
+    assert parsed.zone_name == "Lagunas"
+    assert parsed.auth_date == datetime(2026, 2, 25, tzinfo=UTC)
+
+
+def test_zone_and_authd_are_parsed_with_dollar_prefix_only():
+    parsed = parse_onu_description("$$$$zone_Lagunas_authd_20260225")
+
+    assert parsed.zone_name == "Lagunas"
+    assert parsed.auth_date == datetime(2026, 2, 25, tzinfo=UTC)
+
+
 def test_builder_generates_productive_compatible_description():
     description = build_onu_description(
         zone="San Roque",

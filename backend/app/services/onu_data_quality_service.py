@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 
 from sqlalchemy.orm import Session
 
@@ -51,6 +52,9 @@ class OnuDataQualityService:
 
         # Respetar estado "blocked" si estuviera asignado manualmente.
         if onu.data_quality_status == DATA_QUALITY_BLOCKED:
+            # Para Fase A2 registramos igualmente una lista vacía de faltantes
+            # (observabilidad) sin alterar el estado existente.
+            onu.data_quality_missing_fields = json.dumps([], ensure_ascii=True)
             return OnuDataQualityResult(status=onu.data_quality_status, missing_fields=[])
 
         missing_critical: list[str] = []
@@ -102,4 +106,6 @@ class OnuDataQualityService:
             status = DATA_QUALITY_COMPLETE
 
         onu.data_quality_status = status
+        # Persistimos los faltantes como JSON textual para observabilidad.
+        onu.data_quality_missing_fields = json.dumps(missing_fields, ensure_ascii=True)
         return OnuDataQualityResult(status=status, missing_fields=missing_fields)

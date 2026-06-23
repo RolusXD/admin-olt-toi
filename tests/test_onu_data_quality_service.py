@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 
 from app.models.entities import Onu
 from app.services.onu_data_quality_service import (
@@ -40,6 +41,7 @@ def test_respects_blocked_status():
     assert result.status == DATA_QUALITY_BLOCKED
     assert result.missing_fields == []
     assert onu.data_quality_status == DATA_QUALITY_BLOCKED
+    assert onu.data_quality_missing_fields == "[]"
 
 
 def test_complete_when_all_critical_and_recommended_present():
@@ -60,6 +62,7 @@ def test_complete_when_all_critical_and_recommended_present():
     assert result.status == DATA_QUALITY_COMPLETE
     assert result.missing_fields == []
     assert onu.data_quality_status == DATA_QUALITY_COMPLETE
+    assert json.loads(onu.data_quality_missing_fields or "[]") == []
 
 
 def test_needs_review_when_only_recommended_fields_missing():
@@ -83,6 +86,7 @@ def test_needs_review_when_only_recommended_fields_missing():
     assert "auth_date" in result.missing_fields
     assert "customer_name" not in result.missing_fields
     assert onu.data_quality_status == DATA_QUALITY_NEEDS_REVIEW
+    assert json.loads(onu.data_quality_missing_fields or "[]") == result.missing_fields
 
 
 def test_legacy_incomplete_when_critical_fields_missing():
@@ -120,3 +124,6 @@ def test_legacy_incomplete_when_critical_fields_missing():
     assert "external_id" in result.missing_fields
     assert "auth_date" in result.missing_fields
     assert onu.data_quality_status == DATA_QUALITY_LEGACY_INCOMPLETE
+    assert json.loads(onu.data_quality_missing_fields or "[]") == result.missing_fields
+
+

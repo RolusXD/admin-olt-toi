@@ -369,6 +369,21 @@ export type Onu = {
   technician_notes?: string | null;
   service_mode_code?: string | null;
   import_source?: string | null;
+   behavior?: {
+     mode_label: string;
+     mode_code?: string | null;
+     vlan_id: number;
+     vlan_name?: string | null;
+     speed_profile_up?: string | null;
+     speed_profile_down?: string | null;
+     dhcp_source?: string | null;
+     use_iphost: boolean;
+     use_veip: boolean;
+     use_vlan_filter: boolean;
+     use_loop_detect: boolean;
+     disable_wifi: boolean;
+     speed_profile_code?: string | null;
+   } | null;
   created_at?: string;
   updated_at?: string;
 };

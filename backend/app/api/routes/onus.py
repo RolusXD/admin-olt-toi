@@ -1,10 +1,11 @@
+import json
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.api.deps import DbSession
-from app.models.entities import Nap, Olt, Onu, OnuEventHistory, OnuPowerHistory, Zone
+from app.models.entities import Nap, Olt, Onu, OnuEventHistory, OnuPowerHistory, OnuServiceModeTemplate, SpeedProfile, Vlan, Zone
 from app.repositories.entities import OnuRepository, PowerRepository
-from app.schemas.entities import OnuEventRead, OnuInternalInfoUpdate, OnuRead, OnuSchema, PowerSampleCreate, PowerSampleRead
+from app.schemas.entities import OnuBehaviorRead, OnuDataQualityRead, OnuEventRead, OnuInternalInfoUpdate, OnuRead, OnuSchema, PowerSampleCreate, PowerSampleRead
 from app.services.onu_service import OnuService
 
 router = APIRouter(prefix="/onus", tags=["onus"])
@@ -53,6 +54,66 @@ def list_onus(
     return list(db.scalars(statement.order_by(Onu.customer_name, Onu.serial_number)))
 
 
+@router.get("/data-quality", response_model=list[OnuDataQualityRead])
+def list_onus_data_quality(
+    db: DbSession,
+    olt_id: int | None = None,
+    status: str | None = Query(default=None, description="data_quality_status"),
+    zone: str | None = None,
+    nap: str | None = None,
+) -> list[OnuDataQualityRead]:
+    """Listado de ONUs con enfoque en calidad documental (Fase A2).
+
+    No introduce validaciones obligatorias ni bloqueos; sólo expone el
+    `data_quality_status` y la lista de campos faltantes registrados
+    por `OnuDataQualityService`.
+    """
+
+    statement = select(Onu)
+    if olt_id is not None:
+        statement = statement.where(Onu.olt_id == olt_id)
+    if status:
+        # Filtra por estado de calidad documental, no por estado operativo.
+        statement = statement.where(Onu.data_quality_status == status)
+    if zone:
+        statement = statement.where(Onu.zone_name == zone)
+    if nap:
+        statement = statement.where(Onu.nap_name == nap)
+
+    onus = list(db.scalars(statement.order_by(Onu.customer_name, Onu.serial_number)))
+    results: list[OnuDataQualityRead] = []
+
+    for onu in onus:
+        missing: list[str] = []
+        raw = getattr(onu, "data_quality_missing_fields", None)
+        if raw:
+            try:
+                data = json.loads(raw)
+            except Exception:
+                missing = [str(raw)]
+            else:
+                if isinstance(data, list):
+                    missing = [str(item) for item in data]
+                else:
+                    missing = [str(data)]
+
+        results.append(
+            OnuDataQualityRead(
+                id=onu.id,
+                olt_id=onu.olt_id,
+                serial_number=onu.serial_number,
+                customer_name=onu.customer_name,
+                zone_name=onu.zone_name,
+                nap_name=onu.nap_name,
+                nap_port=onu.nap_port,
+                data_quality_status=onu.data_quality_status,
+                missing_fields=missing,
+            )
+        )
+
+    return results
+
+
 @router.post("", response_model=OnuRead, status_code=status.HTTP_201_CREATED)
 def create_onu(payload: OnuSchema, db: DbSession) -> Onu:
     return OnuRepository(db).create(payload.model_dump())
@@ -92,6 +153,81 @@ def get_onu(onu_id: int, db: DbSession) -> Onu:
     onu = db.get(Onu, onu_id)
     if not onu:
         raise HTTPException(status_code=404, detail="ONU not found")
+
+    # Enriquecer la instancia con un bloque de comportamiento ONU derivado
+    behavior_mode_label = "Desconocido/importado"
+    behavior_details: dict | None = None
+
+    if onu.service_mode_code:
+        mode = db.scalar(
+            select(OnuServiceModeTemplate).where(
+                OnuServiceModeTemplate.olt_id == onu.olt_id,
+                OnuServiceModeTemplate.mode_code == onu.service_mode_code,
+                OnuServiceModeTemplate.is_active.is_(True),
+            )
+        )
+        if mode:
+            mapping = {
+                "router_iphost": "Router",
+                "bridge_tag_internet": "Bridge",
+                "transparent_special": "Transparente",
+            }
+            behavior_mode_label = mapping.get(onu.service_mode_code, onu.service_mode_code)
+            behavior_details = {
+                "mode_label": behavior_mode_label,
+                "mode_code": mode.mode_code,
+                "vlan_mode": mode.vlan_mode,
+                "dhcp_source": mode.dhcp_source,
+                "use_iphost": mode.use_iphost,
+                "use_veip": mode.use_veip,
+                "use_vlan_filter": mode.use_vlan_filter,
+                "use_loop_detect": mode.use_loop_detect,
+                "disable_wifi": mode.disable_wifi,
+            }
+
+    # Resolver VLAN y perfiles opcionales para enriquecer la vista
+    behavior_vlan_name: str | None = None
+    if onu.vlan:
+        vlan = db.scalar(
+            select(Vlan).where(
+                Vlan.olt_id == onu.olt_id,
+                Vlan.vlan_id == onu.vlan,
+            )
+        )
+        if vlan and vlan.name:
+            behavior_vlan_name = vlan.name
+
+    behavior_speed_profile: SpeedProfile | None = None
+    if onu.speed_profile_up and onu.speed_profile_down:
+        behavior_speed_profile = db.scalar(
+            select(SpeedProfile).where(
+                SpeedProfile.olt_id == onu.olt_id,
+                SpeedProfile.upstream_profile_name == onu.speed_profile_up,
+                SpeedProfile.downstream_profile_name == onu.speed_profile_down,
+            )
+        )
+
+    # Adjuntar un atributo dinámico para que Pydantic pueda serializar OnuBehaviorRead si se usa
+    setattr(
+        onu,
+        "behavior",
+        OnuBehaviorRead(
+            mode_label=behavior_mode_label,
+            mode_code=onu.service_mode_code,
+            vlan_id=onu.vlan,
+            vlan_name=behavior_vlan_name,
+            speed_profile_up=onu.speed_profile_up,
+            speed_profile_down=onu.speed_profile_down,
+            dhcp_source=behavior_details["dhcp_source"] if behavior_details else None,
+            use_iphost=behavior_details["use_iphost"] if behavior_details else False,
+            use_veip=behavior_details["use_veip"] if behavior_details else False,
+            use_vlan_filter=behavior_details["use_vlan_filter"] if behavior_details else False,
+            use_loop_detect=behavior_details["use_loop_detect"] if behavior_details else False,
+            disable_wifi=behavior_details["disable_wifi"] if behavior_details else False,
+            speed_profile_code=behavior_speed_profile.profile_code if behavior_speed_profile else None,
+        ),
+    )
+
     return onu
 
 

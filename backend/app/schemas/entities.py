@@ -124,6 +124,16 @@ class OltInventorySummary(BaseModel):
     last_confirmed_import: datetime | None = None
 
 
+class OltDataQualitySummary(BaseModel):
+    olt_id: int
+    total_onus: int
+    complete: int
+    needs_review: int
+    legacy_incomplete: int
+    blocked: int
+    quality_score: float
+
+
 class ZoneSchema(BaseModel):
     olt_id: int | None = None
     olt_code_snapshot: str | None = None
@@ -582,6 +592,29 @@ class OnuServiceModeTemplateRead(OnuServiceModeTemplateCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class OnuBehaviorRead(BaseModel):
+    """Bloque de solo lectura para describir el comportamiento ONU efectivo.
+
+    No se persiste en base de datos; se deriva a partir de Onu + catálogos
+    (OnuServiceModeTemplate, Vlan, SpeedProfile) y se adjunta en el detalle
+    de la ONU.
+    """
+
+    mode_label: str
+    mode_code: str | None = None
+    vlan_id: int
+    vlan_name: str | None = None
+    speed_profile_up: str | None = None
+    speed_profile_down: str | None = None
+    dhcp_source: str | None = None
+    use_iphost: bool = False
+    use_veip: bool = False
+    use_vlan_filter: bool = False
+    use_loop_detect: bool = False
+    disable_wifi: bool = False
+    speed_profile_code: str | None = None
+
+
 class OnuSchema(BaseModel):
     olt_id: int
     olt_code_snapshot: str | None = None
@@ -635,9 +668,22 @@ class OnuRead(OnuSchema):
     olt_name: str | None = None
     olt_display_name: str | None = None
     olt_environment: str | None = None
+    behavior: OnuBehaviorRead | None = None
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class OnuDataQualityRead(BaseModel):
+    id: int
+    olt_id: int
+    serial_number: str
+    customer_name: str
+    zone_name: str | None = None
+    nap_name: str | None = None
+    nap_port: int | None = None
+    data_quality_status: str | None = None
+    missing_fields: list[str] = []
 
 
 class OnuInternalInfoUpdate(BaseModel):

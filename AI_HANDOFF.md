@@ -65,3 +65,9 @@ Also read `ai-context/02_ARCHITECTURE.md` for architectural work and `ai-context
 ## Recommended Next Task
 
 Completar la rotación de los valores JWT/crypto/DB de desarrollo por secretos gestionados para despliegue y extender el escaneo de secretos a pre-commit hooks antes del rollout a producción.
+
+Como siguiente línea documental relacionada con ONU, modelo operacional y provisión controlada, consultar también:
+
+- `docs/EFO_MODELO_OPERACIONAL_ONU.md` — modelo operacional de ONU por OLT (OnuType, OnuServiceModeTemplate, Onu, ProvisioningPlan).
+- `docs/EFO_NORMALIZACION_MODELO_ONU.md` — normalización de `service_mode_code`, modos simples (`router`/`bridge`/`transparent`/`unknown`) y modelo estructurado esperado desde `pon-onu-mng`.
+- `docs/EFO_CALIDAD_DATOS_Y_GOBIERNO_OLT.md` — calidad documental, catálogos técnicos y gobierno de OLT.

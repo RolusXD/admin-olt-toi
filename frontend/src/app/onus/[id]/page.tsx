@@ -68,7 +68,7 @@ export default function OnuDetailPage() {
 
         {current && (
           <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
-            <Panel className="p-4">
+            <Panel className="p-4 space-y-4">
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <Field label="Cliente" value={current.customer_name} />
                 <Field label="Serial" value={current.serial_number} />
@@ -83,6 +83,15 @@ export default function OnuDetailPage() {
                 <Field label="Estado actual" value={current.status} />
                 <Field label="RX actual" value={formatDbm(current.rx_power)} />
                 <Field label="TX actual" value={formatDbm(current.tx_power)} />
+              </div>
+
+              <div className="border-t border-slate-200 pt-4">
+                <h2 className="mb-2 text-sm font-semibold text-slate-950">Comportamiento ONU</h2>
+                <p className="mb-3 text-xs text-muted">
+                  Vista de solo lectura a partir de datos importados y catálogos actuales. No envía comandos a la OLT ni permite edición.
+                </p>
+
+                <OnuBehaviorSection onu={current} />
               </div>
             </Panel>
 
@@ -173,6 +182,38 @@ function Field({ label, value }: { label: string; value: string | number }) {
     <div>
       <div className="text-xs uppercase text-muted">{label}</div>
       <div className="mt-1 text-sm font-medium text-slate-900">{value}</div>
+    </div>
+  );
+}
+
+function OnuBehaviorSection({ onu }: { onu: Onu }) {
+  const behavior = onu.behavior;
+
+  if (!behavior) {
+    return (
+      <div className="rounded-md border border-amber-100 bg-amber-50 p-3 text-sm text-amber-900">
+        <div className="font-medium">Desconocido/importado</div>
+        <div className="mt-1 text-xs text-amber-900/80">
+          El comportamiento fue importado o no pudo clasificarse completamente. Esta ONU puede tener un bloque pon-onu-mng no estándar o histórico.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <Field label="Modo ONU" value={behavior.mode_label} />
+      <Field label="VLAN WAN / servicio" value={behavior.vlan_name ? `${behavior.vlan_id} – ${behavior.vlan_name}` : behavior.vlan_id} />
+      <Field label="Perfil UP" value={behavior.speed_profile_up ?? onu.speed_profile_up ?? ""} />
+      <Field label="Perfil DOWN" value={behavior.speed_profile_down ?? onu.speed_profile_down ?? onu.speed_profile ?? ""} />
+      <Field label="DHCP source" value={behavior.dhcp_source ?? "-"} />
+      <Field label="IPHost" value={behavior.use_iphost ? "Sí" : "No"} />
+      <Field label="VEIP" value={behavior.use_veip ? "Sí" : "No"} />
+      <Field label="VLAN Filter" value={behavior.use_vlan_filter ? "Sí" : "No"} />
+      <Field label="Loop Detect" value={behavior.use_loop_detect ? "Sí" : "No"} />
+      <Field label="WiFi deshabilitado" value={behavior.disable_wifi ? "Sí" : "No"} />
+      <Field label="Código de modo" value={behavior.mode_code ?? onu.service_mode_code ?? "-"} />
+      {behavior.speed_profile_code && <Field label="Perfil combinado" value={behavior.speed_profile_code} />}
     </div>
   );
 }

@@ -16,6 +16,7 @@ from app.schemas.entities import (
     OltCardRead,
     OltPowerSyncResult,
     OltInventorySummary,
+    OltDataQualitySummary,
     OltRead,
     OltSyncResult,
     OltTechnicalSettingsRead,
@@ -31,6 +32,12 @@ from app.services.initial_import_service import ImportCriticalError, InitialImpo
 from app.services.onu_discovery_service import OnuDiscoveryService
 from app.services.olt_cli_service import OltCliService
 from app.services.olt_service import OltService
+from app.services.onu_data_quality_service import (
+    DATA_QUALITY_BLOCKED,
+    DATA_QUALITY_COMPLETE,
+    DATA_QUALITY_LEGACY_INCOMPLETE,
+    DATA_QUALITY_NEEDS_REVIEW,
+)
 
 router = APIRouter(prefix="/olts", tags=["olts"])
 
@@ -206,6 +213,47 @@ def inventory_summary(olt_id: int, db: DbSession) -> dict:
         "vlans": db.scalar(select(func.count()).select_from(Vlan).where(Vlan.olt_id == olt_id)) or 0,
         "profiles": db.scalar(select(func.count()).select_from(GponProfile).where(GponProfile.olt_id == olt_id)) or 0,
         "last_confirmed_import": last_confirmed_import,
+    }
+
+
+@router.get("/{olt_id}/data-quality-summary", response_model=OltDataQualitySummary)
+def olt_data_quality_summary(olt_id: int, db: DbSession) -> dict:
+    """Resumen de calidad documental por OLT (Fase A2 – observabilidad).
+
+    No aplica validaciones duras ni bloquea provisión; sólo expone
+    métricas agregadas por estado de calidad documental.
+    """
+
+    get_olt_or_404(db, olt_id)
+
+    total_onus = db.scalar(select(func.count()).select_from(Onu).where(Onu.olt_id == olt_id)) or 0
+
+    def _count_by_status(status: str) -> int:
+        return (
+            db.scalar(
+                select(func.count()).select_from(Onu).where(
+                    Onu.olt_id == olt_id,
+                    Onu.data_quality_status == status,
+                )
+            )
+            or 0
+        )
+
+    complete = _count_by_status(DATA_QUALITY_COMPLETE)
+    needs_review = _count_by_status(DATA_QUALITY_NEEDS_REVIEW)
+    legacy_incomplete = _count_by_status(DATA_QUALITY_LEGACY_INCOMPLETE)
+    blocked = _count_by_status(DATA_QUALITY_BLOCKED)
+
+    quality_score = float(round((complete / total_onus) * 100, 2)) if total_onus else 0.0
+
+    return {
+        "olt_id": olt_id,
+        "total_onus": total_onus,
+        "complete": complete,
+        "needs_review": needs_review,
+        "legacy_incomplete": legacy_incomplete,
+        "blocked": blocked,
+        "quality_score": quality_score,
     }
 
 

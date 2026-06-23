@@ -68,6 +68,15 @@ class ParsedOnuManagementMode:
     security_profiles: list[str] = field(default_factory=list)
     mode_code: str = "unknown"
     raw_block: str = ""
+    # Proyección normalizada y modelo estructurado adicional
+    mode_simple: str = "unknown"  # router / bridge / transparent / unknown
+    port_mode: str = "unknown"  # access / tag / hybrid / trunk / transparent / unknown
+    service_vlans: list[int] = field(default_factory=list)
+    allowed_vlans: list[int] = field(default_factory=list)
+    native_vlan: int | None = None
+    wan_vlan_id: int | None = None
+    vlan_filter_rules: list[dict] = field(default_factory=list)
+    flows: list[dict] = field(default_factory=list)
 
 
 def parse_onu_management_modes(raw_config: str) -> list[ParsedOnuManagementMode]:
@@ -114,15 +123,35 @@ def _parse_block(interface: str, lines: list[str]) -> ParsedOnuManagementMode:
         if (match := re.match(r"security-mng\s+(\d+)\b", line, re.IGNORECASE))
     ]
     vlan_id = _vlan_id(lines)
+    port_mode = _port_mode(lines)
+    vlan_filter_rules = _vlan_filter_rules(lines)
+    flows, service_vlans = _flows_and_service_vlans(lines)
+    allowed_vlans, native_vlan = _allowed_vlans_and_native_vlan(lines)
 
+    # Reglas de clasificación de modo ONU (service_mode_code) compatibles con históricos
     if vlan_mode == "transparent":
+        # Casos tipo transparent_special (incluyen IPHost/VEIP + vlan-filter + DHCP desde Internet)
         mode_code = "transparent_special"
     elif has_iphost and has_vlan_filter and dhcp_source == "from-onu":
+        # Router con IPHost, filtros VLAN y DHCP servido por la ONU
         mode_code = "router_iphost"
-    elif vlan_mode == "tag" and dhcp_source == "from-internet":
+    elif (not has_iphost) and has_veip and dhcp_source == "from-internet":
+        # Bridge: sin IPHost, con VEIP y DHCP desde Internet, independientemente del modo de puerto
         mode_code = "bridge_tag_internet"
     else:
         mode_code = "unknown"
+
+    if mode_code == "router_iphost":
+        mode_simple = "router"
+    elif mode_code == "bridge_tag_internet":
+        mode_simple = "bridge"
+    elif mode_code == "transparent_special":
+        mode_simple = "transparent"
+    else:
+        mode_simple = "unknown"
+
+    # WAN principal: priorizar VLAN de vlan-filter; si no hay, caer al heurístico _vlan_id
+    wan_vlan_id = vlan_filter_rules[0]["vlan_id"] if vlan_filter_rules else vlan_id
 
     return ParsedOnuManagementMode(
         onu_interface=interface,
@@ -139,6 +168,14 @@ def _parse_block(interface: str, lines: list[str]) -> ParsedOnuManagementMode:
         security_profiles=security_profiles,
         mode_code=mode_code,
         raw_block=text,
+        mode_simple=mode_simple,
+        port_mode=port_mode,
+        service_vlans=service_vlans,
+        allowed_vlans=allowed_vlans,
+        native_vlan=native_vlan,
+        wan_vlan_id=wan_vlan_id,
+        vlan_filter_rules=vlan_filter_rules,
+        flows=flows,
     )
 
 
@@ -174,3 +211,131 @@ def _vlan_id(lines: list[str]) -> int | None:
             if match:
                 return int(match.group(1))
     return None
+
+
+def _port_mode(lines: list[str]) -> str:
+    """Detectar el modo principal del puerto Ethernet de servicio.
+
+    Se basa en la primera coincidencia de ``vlan port <port> mode <mode>`` y
+    normaliza el valor a uno de: access / tag / hybrid / trunk / transparent / unknown.
+    """
+
+    for line in lines:
+        match = re.search(r"vlan\s+port\s+\S+\s+mode\s+(\S+)", line, re.IGNORECASE)
+        if not match:
+            continue
+        mode = match.group(1).lower()
+        if mode in {"tag", "tagged"}:
+            return "tag"
+        if mode == "hybrid":
+            return "hybrid"
+        if mode == "trunk":
+            return "trunk"
+        if mode == "transparent":
+            return "transparent"
+        if mode in {"untag", "access"}:
+            return "access"
+        return "unknown"
+    return "unknown"
+
+
+def _vlan_filter_rules(lines: list[str]) -> list[dict]:
+    rules: list[dict] = []
+    for line in lines:
+        match = re.search(
+            r"vlan-filter\s+iphost\s+(\d+).*?priority\s+(\d+)\s+vid\s+(\d+)",
+            line,
+            re.IGNORECASE,
+        )
+        if match:
+            rules.append(
+                {
+                    "iphost_index": int(match.group(1)),
+                    "priority": int(match.group(2)),
+                    "vlan_id": int(match.group(3)),
+                }
+            )
+    return rules
+
+
+def _flows_and_service_vlans(lines: list[str]) -> tuple[list[dict], list[int]]:
+    flows_by_id: dict[int, dict] = {}
+    flow_mode: str | None = None
+    service_vlans: set[int] = set()
+
+    for line in lines:
+        mode_match = re.match(r"flow\s+mode\s+\d+\s+(.*)", line.strip(), re.IGNORECASE)
+        if mode_match:
+            flow_mode = mode_match.group(1).strip()
+            continue
+        match = re.match(r"flow\s+(\d+)\s+priority\s+(\d+)\s+vid\s+(\d+)", line.strip(), re.IGNORECASE)
+        if match:
+            flow_id = int(match.group(1))
+            vlan_id = int(match.group(3))
+            flows_by_id.setdefault(
+                flow_id,
+                {"id": flow_id, "priority": int(match.group(2)), "vlan_id": vlan_id, "gemport_id": None},
+            )
+            service_vlans.add(vlan_id)
+
+    # Asociar gemport↔flow
+    for line in lines:
+        match = re.match(r"gemport\s+(\d+)\s+flow\s+(\d+)", line.strip(), re.IGNORECASE)
+        if match:
+            gemport_id = int(match.group(1))
+            flow_id = int(match.group(2))
+            if flow_id in flows_by_id:
+                flows_by_id[flow_id]["gemport_id"] = gemport_id
+
+    flows: list[dict] = []
+    for item in sorted(flows_by_id.values(), key=lambda value: value["id"]):
+        if flow_mode is not None:
+            item["mode"] = flow_mode
+        service_vlans.add(item["vlan_id"])
+        flows.append(item)
+
+    # También considerar VLANs de switchport vlan ... tag vport 1
+    for line in lines:
+        match = re.search(r"switchport\s+vlan\s+([\d,]+)\s+tag\s+vport\s+\d+", line, re.IGNORECASE)
+        if match:
+            for token in match.group(1).split(","):
+                token = token.strip()
+                if token.isdigit():
+                    service_vlans.add(int(token))
+
+    return flows, sorted(service_vlans)
+
+
+def _allowed_vlans_and_native_vlan(lines: list[str]) -> tuple[list[int], int | None]:
+    allowed_by_port: dict[str, set[int]] = {}
+    native_by_port: dict[str, int] = {}
+
+    for line in lines:
+        vlan_match = re.search(r"vlan\s+port\s+(\S+)\s+vlan\s+([\d,]+)", line, re.IGNORECASE)
+        if vlan_match:
+            port = vlan_match.group(1)
+            allowed = allowed_by_port.setdefault(port, set())
+            for token in vlan_match.group(2).split(","):
+                token = token.strip()
+                if token.isdigit():
+                    allowed.add(int(token))
+
+        native_match = re.search(r"vlan\s+port\s+(\S+)\s+mode\s+hybrid\s+def-vlan\s+(\d+)", line, re.IGNORECASE)
+        if native_match:
+            native_by_port[native_match.group(1)] = int(native_match.group(2))
+
+    # Seleccionar el puerto "principal" (priorizar eth_0/1 si existe)
+    preferred_port: str | None = None
+    if "eth_0/1" in allowed_by_port or "eth_0/1" in native_by_port:
+        preferred_port = "eth_0/1"
+    elif allowed_by_port:
+        preferred_port = sorted(allowed_by_port.keys())[0]
+    elif native_by_port:
+        preferred_port = sorted(native_by_port.keys())[0]
+
+    if not preferred_port:
+        return [], None
+
+    allowed = sorted(allowed_by_port.get(preferred_port, set()))
+    native = native_by_port.get(preferred_port)
+    return allowed, native

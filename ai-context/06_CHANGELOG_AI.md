@@ -1,5 +1,128 @@
 # AI Changelog
 
+## 2026-06-21 — Fase A2: Observabilidad de calidad documental ONU
+
+- Añadido el campo `Onu.data_quality_missing_fields` en el modelo (texto JSON) y la migración `0035_onu_data_quality_missing_fields` para persistir la lista de campos faltantes por ONU sin bloquear provisión.
+- Extendido `OnuDataQualityService.evaluate` para:
+  - Respetar `data_quality_status = "blocked"` y registrar `data_quality_missing_fields=[]`.
+  - Calcular `missing_fields` por ONU (críticos + recomendados) y persistirlos como JSON en `data_quality_missing_fields` junto con el estado `complete/needs_review/legacy_incomplete`.
+- Implementados endpoints de sólo lectura para observabilidad de calidad documental:
+  - `GET /olts/{id}/data-quality-summary` (schema `OltDataQualitySummary`): devuelve `total_onus`, conteos por estado (`complete`, `needs_review`, `legacy_incomplete`, `blocked`) y `quality_score` (% de ONUs `complete`).
+  - `GET /onus/data-quality` (schema `OnuDataQualityRead`): listado filtrable por `olt_id`, `status` (data_quality_status), `zone` y `nap`, con los `missing_fields` reconstruidos a partir de `data_quality_missing_fields`.
+- Añadidos modelos de esquema en `backend/app/schemas/entities.py`:
+  - `OltDataQualitySummary` para el resumen por OLT.
+  - `OnuDataQualityRead` para filas centradas en calidad documental.
+- Añadidos tests:
+  - `tests/test_onu_data_quality_service.py` ampliado para verificar la persistencia de `data_quality_missing_fields` en todos los estados (`complete`, `needs_review`, `legacy_incomplete`, `blocked`).
+  - `tests/test_api_data_quality.py` que ejerce directamente `olt_data_quality_summary` y `list_onus_data_quality` sobre una base SQLite en memoria, validando conteos por estado y filtros por `status`.
+- Ejecutado `python -m compileall backend/app` sin errores tras los cambios.
+- Ejecutado `DATABASE_URL=sqlite+pysqlite:///:memory: pytest tests/test_onu_data_quality_service.py tests/test_api_data_quality.py -q`; 6/6 tests pasando, confirmando Fase A2 estable en servicio y API interna.
+
+## 2026-06-22 — Fase P1: Sección "Comportamiento ONU" en ficha ONU (solo lectura)
+
+- Backend:
+  - Extendido el esquema `OnuRead` en `backend/app/schemas/entities.py` para incluir un bloque opcional `behavior: OnuBehaviorRead | None`, que resume el comportamiento ONU efectivo sin modificar el modelo de base de datos.
+  - Añadido el modelo `OnuBehaviorRead` como DTO de solo lectura con los campos:
+    - `mode_label`, `mode_code`, `vlan_id`, `vlan_name`, `speed_profile_up`, `speed_profile_down`,
+      `dhcp_source`, `use_iphost`, `use_veip`, `use_vlan_filter`, `use_loop_detect`, `disable_wifi`, `speed_profile_code`.
+  - Actualizado `GET /onus/{id}` en `backend/app/api/routes/onus.py` para, sin tocar provisioning ni Telnet:
+    - Resolver el modo a partir de `Onu.service_mode_code` y `OnuServiceModeTemplate` (`olt_id` + `mode_code`), mapeando:
+      - `router_iphost` → `Router`, `bridge_tag_internet` → `Bridge`, `transparent_special` → `Transparente`.
+    - Enriquecer la información con:
+      - `Vlan` (nombre opcional asociado a `Onu.vlan`).
+      - `SpeedProfile` (cuando `speed_profile_up/down` coinciden con un perfil combinado), para exponer `speed_profile_code`.
+    - Adjuntar dinámicamente `onu.behavior = OnuBehaviorRead(...)` respetando compatibilidad con clientes anteriores que no esperen el campo.
+- Frontend:
+  - Actualizado `frontend/src/types/index.ts` para que el tipo `Onu` incluya el campo opcional `behavior` alineado con `OnuBehaviorRead`.
+  - Extendida la página de detalle `frontend/src/app/onus/[id]/page.tsx` para mostrar una nueva sección "Comportamiento ONU" dentro del panel principal de la ficha ONU:
+    - Cuando existe `behavior`:
+      - Muestra Modo ONU (etiqueta amigable), `VLAN WAN / servicio` (id + nombre), perfiles de subida y bajada,
+        `DHCP source`, flags de `IPHost`, `VEIP`, `VLAN Filter`, `Loop Detect`, `WiFi deshabilitado`, `Código de modo` y, si aplica, `Perfil combinado`.
+    - Cuando no existe `behavior` (p.ej. `service_mode_code` nulo o sin plantilla activa):
+      - Muestra un bloque estático "Desconocido/importado" con una advertencia suave indicando que el comportamiento fue importado o no pudo clasificarse completamente.
+    - La sección es estrictamente de solo lectura; no se han añadido controles de edición ni acciones que disparen Telnet.
+- Verificación:
+  - Ejecutado `python -m compileall backend/app` sin errores.
+  - Ejecutado `pytest`; 114 tests pasando, confirmando que los cambios en esquema y endpoint son compatibles con la suite existente.
+  - Ejecutado `cd frontend && npm run build`; build de Next.js/TypeScript completada correctamente, incluyendo la ruta dinámica `/onus/[id]`.
+
+## 2026-06-23 — Normalización documental de `service_mode_code` y modelo ONU
+
+- Añadido `docs/EFO_NORMALIZACION_MODELO_ONU.md` como especificación formal para la normalización del modelo ONU y `service_mode_code`, definiendo:
+  - Modos simples de servicio (`router`, `bridge`, `transparent`, `unknown`) como proyección de `service_mode_code`.
+  - Separación conceptual entre Modo ONU (comportamiento / `OnuServiceModeTemplate`), Modo WAN (VLAN principal), Modo Puerto y catálogo de VLANs por OLT.
+  - Modelo estructurado esperado desde el parser de `pon-onu-mng` (`OnuPonOnuMngModel`) como DTO intermedio, sin cambiar el esquema de BD.
+  - Reglas de clasificación basadas en patrones típicos observados en ONUs representativas (1215, 1217, 1218, 1227) del running-config de `OLT-PCM-ZTE-01`.
+  - Atribución clara de responsabilidades entre `Onu`, `OnuType`, `OnuServiceModeTemplate` y `ProvisioningPlan`.
+  - Confirmación documental de que VLANs, Zonas, NAPs, Tipos ONU y Modos ONU (`OnuServiceModeTemplate`) son siempre específicos de una OLT.
+- Actualizado `ai-context/05_TODO.md` con una nueva sección "Modelo ONU y service_mode_code" para planificar:
+  - La implementación de un parser estructurado de `pon-onu-mng` alineado con la nueva EFO.
+  - La definición y poblamiento de `OnuServiceModeTemplate` por OLT a partir de los modos reales observados.
+  - La integración de la normalización `service_mode_code_raw → service_mode_code` en la importación inicial, manteniendo ONUs no clasificadas en modo simple `unknown`.
+
+## 2026-06-23 — Fase P2: Parser estructurado `pon-onu-mng` y clasificación de modos ONU
+
+- Documentación:
+  - Actualizado `docs/EFO_MODELO_OPERACIONAL_ONU.md` para alinear los modos ONU simples con la EFO de normalización:
+    - Modos simples oficiales: `router`, `bridge`, `transparent`, `unknown` (expuestos como `Router / Bridge / Transparente / Desconocido` en UI).
+    - "Híbrido" deja de ser un modo ONU principal y pasa a ser un concepto de configuración avanzada dentro de `OnuServiceModeTemplate` y modo de puerto.
+  - Actualizado `docs/EFO_NORMALIZACION_MODELO_ONU.md` para:
+    - Dejar explícito que "Híbrido" **no** es un quinto modo simple y siempre se proyecta a `router`, `bridge`, `transparent` o `unknown`.
+    - Aclarar que `access`, `hybrid`, `trunk`, `transparent` son **modos de puerto**, no valores de `service_mode_code`.
+    - Reforzar que los ejemplos ONU 1215/1217/1218/1227 son casos de auditoría histórica ilustrativos, no definiciones normativas.
+
+- Parser estructurado `pon-onu-mng`:
+  - Extendida la dataclass `ParsedOnuManagementMode` en `backend/app/drivers/zte/c300_v125p3_telnet/zte_onu_management_mode_parser.py` para incluir campos estructurados adicionales sin cambiar el esquema de BD:
+    - `mode_simple`: proyección normalizada (`router` / `bridge` / `transparent` / `unknown`).
+    - `port_mode`: modo principal de puerto (`access` / `tag` / `hybrid` / `trunk` / `transparent` / `unknown`).
+    - `service_vlans`: lista de VLANs de servicio detectadas a partir de `flow ... vid X`, bindings `gemport` y `switchport vlan ... tag vport 1`.
+    - `allowed_vlans`: VLANs permitidas por puerto a partir de `vlan port eth_* vlan A,B,C`.
+    - `native_vlan`: VLAN nativa en modos híbridos a partir de `vlan port eth_* mode hybrid def-vlan X`.
+    - `wan_vlan_id`: VLAN WAN principal priorizando `vlan-filter iphost ... vid X` y usando `vlan_id` de respaldo.
+    - `vlan_filter_rules`: lista de reglas `{iphost_index, priority, vlan_id}` para `vlan-filter iphost ...`.
+    - `flows`: lista de flujos `{id, priority, vlan_id, gemport_id, mode}` extraídos de `flow`/`gemport`.
+  - Implementadas funciones auxiliares para calcular estos campos sin impactar la API externa ni el modelo de BD:
+    - `_port_mode`, `_vlan_filter_rules`, `_flows_and_service_vlans`, `_allowed_vlans_and_native_vlan`.
+
+- Reglas de clasificación de modo ONU (compatibles con históricos):
+  - Ajustado `_parse_block` para aplicar las reglas oficiales de la Fase P2 sin introducir nuevos `service_mode_code`:
+    - `transparent_special` cuando `vlan_mode == "transparent"`.
+    - `router_iphost` cuando hay `iphost`, `vlan-filter` y `dhcp_source == "from-onu"`.
+    - `bridge_tag_internet` cuando **no** hay `iphost`, hay `veip` y `dhcp_source == "from-internet"`, independientemente de si el puerto está en `tag`, `hybrid` o `trunk`.
+    - `unknown` cuando ningún patrón aplica.
+  - `mode_simple` se deriva directamente de `mode_code` (`router`, `bridge`, `transparent`, `unknown`), garantizando que no existan modos simples adicionales.
+
+- Casos reales cubiertos por tests unitarios:
+  - Actualizado `tests/test_zte_onu_management_mode_parser.py` para añadir casos estructurados basados en bloques reales de auditoría:
+    - **Bridge Hybrid – Nodo Matilde** (`gpon-onu_1/2/10:111`):
+      - `mode_simple = "bridge"`, `mode_code = "bridge_tag_internet"`.
+      - `port_mode = "hybrid"`, `native_vlan = 700`, `allowed_vlans = [21, 200]`.
+      - `service_vlans = [21, 200, 700]`, `dhcp_source = "from-internet"`, `has_veip = True`, `has_iphost = False`.
+    - **Bridge Trunk – Centro de Salud** (`gpon-onu_1/2/13:4`):
+      - `mode_simple = "bridge"`, `mode_code = "bridge_tag_internet"`.
+      - `port_mode = "trunk"`, `allowed_vlans = [700, 735, 835]`.
+      - `service_vlans = [200, 700, 735, 835]` (VLAN 200 detectada en flows), `dhcp_source = "from-internet"`.
+    - **Router con VLAN distinta a 200** (`gpon-onu_1/2/5:29`):
+      - `mode_simple = "router"`, `mode_code = "router_iphost"`.
+      - `wan_vlan_id = 602` (desde `vlan-filter iphost 1 ... vid 602`).
+      - `service_vlans = [602, 605]`, `has_iphost = True`, `has_veip = True`, `has_vlan_filter = True`, `dhcp_source = "from-onu"`.
+    - **Bridge Trunk con loop-detect** (`gpon-onu_1/2/20:7`):
+      - `mode_simple = "bridge"`, `mode_code = "bridge_tag_internet"`.
+      - `port_mode = "trunk"`, `loop_detect_enabled = True`, `dhcp_source = "from-internet"`.
+  - Confirmado que los tests históricos siguen pasando y que los nuevos casos refuerzan las reglas de clasificación sin cambiar `SERVICE_MODE_DEFINITIONS`.
+
+- Bug `description zone_Lagunas_authd_YYYYMMDD`:
+  - Añadidos tests en `tests/test_zte_onu_description_parser.py` para garantizar que:
+    - `description zone_Lagunas_authd_20260225` y `$$$$zone_Lagunas_authd_20260225` producen `zone_name = "Lagunas"` y `auth_date = 2026-02-25`.
+    - Esto se logra únicamente mediante ajustes al parser de descripción ya existente (sin tocar el modelo de datos), asegurando compatibilidad con descripciones mínimas de auditoría.
+
+- TODO / AI context y verificación:
+  - Actualizado `ai-context/05_TODO.md` en la sección "Modelo ONU y service_mode_code" para marcar como completadas:
+    - La implementación del parser estructurado `pon-onu-mng` alineado con `EFO_NORMALIZACION_MODELO_ONU`.
+    - La integración de la normalización `service_mode_code` en la importación inicial, manteniendo `unknown` para casos no clasificables pero persisitiendo `service_mode_code` cuando el parser sí clasifica.
+  - Ejecutado `python -m compileall backend/app` sin errores.
+  - Ejecutado `pytest tests/test_zte_onu_management_mode_parser.py tests/test_zte_onu_description_parser.py -q`; 16/16 tests pasando, confirmando que el parser extendido y los nuevos casos de auditoría son estables.
+
 ## 2026-06-21 — Fase A1: Estado estable para data_quality_status en import inicial
 
 - Corregido `backend/app/services/initial_import_service.py` para:
