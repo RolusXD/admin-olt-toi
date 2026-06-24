@@ -370,19 +370,25 @@ export type Onu = {
   service_mode_code?: string | null;
   import_source?: string | null;
    behavior?: {
+     service_mode_code?: string | null;
+     mode_simple: "router" | "bridge" | "transparent" | "unknown" | string;
      mode_label: string;
+     template_name?: string | null;
      mode_code?: string | null;
      vlan_id: number;
      vlan_name?: string | null;
      speed_profile_up?: string | null;
      speed_profile_down?: string | null;
+     speed_profile_code?: string | null;
      dhcp_source?: string | null;
      use_iphost: boolean;
      use_veip: boolean;
      use_vlan_filter: boolean;
      use_loop_detect: boolean;
      disable_wifi: boolean;
-     speed_profile_code?: string | null;
+     data_quality_status?: string | null;
+     data_quality_missing_fields: string[];
+     warnings: string[];
    } | null;
   created_at?: string;
   updated_at?: string;

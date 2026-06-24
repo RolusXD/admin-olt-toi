@@ -137,6 +137,64 @@
   - Clasificación `legacy_incomplete` cuando faltan uno o más campos críticos, incluyendo la distinción de zonas `SIN_ZONA`.
 - Ejecutado `pytest tests/test_onu_data_quality_service.py -q`; 4/4 tests pasando.
 
+## 2026-06-23 — Fase P3: Ficha Operacional ONU (solo lectura)
+
+- Backend:
+  - Extendido `OnuBehaviorRead` en `backend/app/schemas/entities.py` para alinearlo con las EFO de Modelo Operacional ONU y Normalización:
+    - Nuevos campos expuestos en el bloque `behavior` (solo lectura, no persistente):
+      - Identidad de modo: `service_mode_code`, `mode_simple` (`router`/`bridge`/`transparent`/`unknown`), `mode_label` (Router/Bridge/Transparente/Desconocido).
+      - Plantilla: `template_name`, `mode_code`.
+      - WAN y perfiles: `vlan_id`, `vlan_name`, `speed_profile_up`, `speed_profile_down`, `speed_profile_code`.
+      - Comportamiento operativo: `dhcp_source`, `use_iphost`, `use_veip`, `use_vlan_filter`, `use_loop_detect`, `disable_wifi`.
+      - Calidad documental: `data_quality_status`, `data_quality_missing_fields`.
+      - Advertencias suaves: `warnings` (por ejemplo, ausencia de plantilla).
+  - Reescrito `GET /onus/{onu_id}` en `backend/app/api/routes/onus.py` para construir el bloque `behavior` de forma puramente de lectura, sin tocar provisioning ni Telnet:
+    - Mapeo explícito `service_mode_code → mode_simple / mode_label`:
+      - `router_iphost` → `router` / `Router`.
+      - `bridge_tag_internet` → `bridge` / `Bridge`.
+      - `transparent_special` → `transparent` / `Transparente`.
+      - `None`/`""`/`"unknown"` → `unknown` / `Desconocido/importado`.
+    - Resolución opcional de plantilla `OnuServiceModeTemplate` por (`olt_id`, `mode_code`) sólo cuando existe y está activa:
+      - Si la plantilla está presente → se rellenan `template_name`, `mode_code`, flags (`dhcp_source`, `use_iphost`, `use_veip`, `use_vlan_filter`, `use_loop_detect`, `disable_wifi`).
+      - Si **no** existe plantilla para el `service_mode_code` informado → se degrada `mode_simple` a `unknown`, `mode_label` a `Desconocido/importado` y se añade un aviso suave en `warnings` sin lanzar errores.
+    - Enriquecimiento WAN/perfiles sin consultas adicionales a la OLT:
+      - `Vlan`: búsqueda por (`Vlan.olt_id`, `Vlan.vlan_id`) para exponer `vlan_name` cuando existe.
+      - `SpeedProfile`: búsqueda por (`SpeedProfile.olt_id`, `upstream_profile_name`, `downstream_profile_name`) para exponer `speed_profile_code` cuando coincide con un perfil combinado.
+    - Calidad documental:
+      - Reconstrucción de `data_quality_missing_fields` como lista de strings a partir de `Onu.data_quality_missing_fields` (JSON), manteniendo `data_quality_status`.
+  - Confirmado que todo el cálculo se hace en base de datos local y DTOs; no se añaden comandos Telnet, migraciones ni modificaciones de datos.
+- Tests backend:
+  - Añadido `tests/test_onu_behavior_api.py` con una base SQLite en memoria que comprueba los casos mínimos requeridos:
+    - ONU `router_iphost` con plantilla:
+      - `mode_simple = "router"`, `mode_label = "Router"`, `template_name = "Router IPHost"`, `dhcp_source = "from-internet"`, `use_iphost = True`, flags VEIP/VLAN filter/Loop detect/WiFi coherentes, `data_quality_status = "complete"`, `warnings = []`.
+    - ONU `bridge_tag_internet` con plantilla:
+      - `mode_simple = "bridge"`, `mode_label = "Bridge"`, `template_name = "Bridge Internet"`, `use_iphost = False`, `dhcp_source = "none"`.
+    - ONU `transparent_special` con plantilla:
+      - `mode_simple = "transparent"`, `mode_label = "Transparente"`, `template_name = "Transparent Special"`.
+    - ONU sin `service_mode_code`:
+      - `service_mode_code is None`, `mode_simple = "unknown"`, `mode_label = "Desconocido/importado"`, sin plantilla ni warnings.
+    - ONU con `service_mode_code` pero sin plantilla:
+      - `service_mode_code = "router_iphost"`, `mode_simple = "unknown"`, `mode_label = "Desconocido/importado"`, `template_name is None`, y `warnings` contiene el aviso de plantilla ausente.
+- Frontend:
+  - Actualizado el tipo `Onu` en `frontend/src/types/index.ts` para reflejar el nuevo contrato de `behavior`, incluyendo:
+    - `service_mode_code`, `mode_simple`, `mode_label`, `template_name`, `mode_code`, `vlan_id`, `vlan_name`, `speed_profile_up/down`, `speed_profile_code`, `dhcp_source`, `use_iphost`, `use_veip`, `use_vlan_filter`, `use_loop_detect`, `disable_wifi`, `data_quality_status`, `data_quality_missing_fields`, `warnings`.
+  - Ajustada la ficha de detalle `frontend/src/app/onus/[id]/page.tsx`:
+    - Sección "Comportamiento ONU" permanece en modo solo lectura, sin controles de edición ni acciones que disparen Telnet.
+    - Cuando `behavior` es `null` o `mode_simple === "unknown"`:
+      - Se muestra el aviso textual requerido: "ONU importada sin clasificación operacional. Requiere saneamiento manual.".
+    - Layout de la sección actualizado para mostrar exactamente los campos pedidos:
+      - "Modo ONU" → `behavior.mode_label`.
+      - "Plantilla" → `behavior.template_name ?? behavior.mode_code ?? onu.service_mode_code ?? "-"`.
+      - "VLAN WAN" → `vlan_id` + nombre si existe.
+      - "Perfil subida" / "Perfil bajada" → perfiles UP/DOWN desde `behavior` o, en su defecto, desde `onu`.
+      - "DHCP Source", "IPHost", "VEIP", "VLAN Filter", "Loop Detect", "WiFi deshabilitado".
+      - "Estado de calidad documental" → `behavior.data_quality_status` o `onu.description_parse_status` como respaldo.
+- Verificación técnica:
+  - Ejecutado `python -m compileall backend/app` sin errores después de los cambios en schemas y rutas.
+  - Ejecutado `DATABASE_URL=sqlite+pysqlite:///:memory: pytest`; 125 tests pasando, incluyendo la nueva suite `tests/test_onu_behavior_api.py`.
+  - Ejecutado `cd frontend && npm run build`; build de Next.js/TypeScript completada correctamente, confirmando que el tipo `Onu.behavior` y la ficha `/onus/[id]` son coherentes.
+
+
 ## 2026-06-21 — Ajustes EFO Calidad de Datos y Gobierno OLT (documental)
 
 - Actualizada `docs/EFO_CALIDAD_DATOS_Y_GOBIERNO_OLT.md` para dejar explícito que:

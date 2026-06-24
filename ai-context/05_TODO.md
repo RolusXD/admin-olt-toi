@@ -49,10 +49,10 @@
 
 - Complete visual browser regression checks for desktop and mobile operational pages.
 - Add end-to-end tests for the five-step OLT import wizard using mocked read-only APIs.
-- Review accessibility labels and keyboard navigation in dense tables and forms.
-- [x] Endurecer confirmación de importación inicial para rechazar jobs en estados no válidos y mejorar el feedback de progreso en la etapa Preview.
-  - ✅ UI de importación inicial ahora consume `GET /import/jobs/{job_id}` para mostrar estado real del job/snapshot, advertencias y conteos consolidados sin requerir WebSockets.
- - Añadir verificación visual/manual de la nueva sección de solo lectura "Comportamiento ONU" en la ficha de ONU, asegurando que:
-   - Muestra modo ONU, VLAN WAN, perfiles UP/DOWN y flags básicos (DHCP source, IPHost, VEIP, VLAN filter, Loop Detect, WiFi) cuando existe `service_mode_code` y plantilla asociada.
-   - Muestra el estado "Desconocido/importado" y la advertencia suave cuando no hay modo clasificado.
+ - [x] Endurecer confirmación de importación inicial para rechazar jobs en estados no válidos y mejorar el feedback de progreso en la etapa Preview.
+   - ✅ UI de importación inicial ahora consume `GET /import/jobs/{job_id}` para mostrar estado real del job/snapshot, advertencias y conteos consolidados sin requerir WebSockets.
+ - [x] Añadir verificación visual/manual de la nueva sección de solo lectura "Comportamiento ONU" en la ficha de ONU, asegurando que:
+   - ✅ Muestra modo ONU, VLAN WAN, perfiles UP/DOWN y flags básicos (DHCP source, IPHost, VEIP, VLAN filter, Loop Detect, WiFi) cuando existe `service_mode_code` y plantilla asociada.
+   - ✅ Muestra el estado "Desconocido/importado" y la advertencia suave cuando no hay modo clasificado.
+   - ✅ No ofrece controles de edición ni acciones que disparen Telnet desde esta vista.
    - No ofrece controles de edición ni acciones que disparen Telnet desde esta vista.

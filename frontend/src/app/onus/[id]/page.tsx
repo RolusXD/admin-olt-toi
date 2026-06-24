@@ -194,26 +194,43 @@ function OnuBehaviorSection({ onu }: { onu: Onu }) {
       <div className="rounded-md border border-amber-100 bg-amber-50 p-3 text-sm text-amber-900">
         <div className="font-medium">Desconocido/importado</div>
         <div className="mt-1 text-xs text-amber-900/80">
-          El comportamiento fue importado o no pudo clasificarse completamente. Esta ONU puede tener un bloque pon-onu-mng no estándar o histórico.
+          ONU importada sin clasificación operacional. Requiere saneamiento manual.
         </div>
       </div>
     );
   }
 
   return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-      <Field label="Modo ONU" value={behavior.mode_label} />
-      <Field label="VLAN WAN / servicio" value={behavior.vlan_name ? `${behavior.vlan_id} – ${behavior.vlan_name}` : behavior.vlan_id} />
-      <Field label="Perfil UP" value={behavior.speed_profile_up ?? onu.speed_profile_up ?? ""} />
-      <Field label="Perfil DOWN" value={behavior.speed_profile_down ?? onu.speed_profile_down ?? onu.speed_profile ?? ""} />
-      <Field label="DHCP source" value={behavior.dhcp_source ?? "-"} />
-      <Field label="IPHost" value={behavior.use_iphost ? "Sí" : "No"} />
-      <Field label="VEIP" value={behavior.use_veip ? "Sí" : "No"} />
-      <Field label="VLAN Filter" value={behavior.use_vlan_filter ? "Sí" : "No"} />
-      <Field label="Loop Detect" value={behavior.use_loop_detect ? "Sí" : "No"} />
-      <Field label="WiFi deshabilitado" value={behavior.disable_wifi ? "Sí" : "No"} />
-      <Field label="Código de modo" value={behavior.mode_code ?? onu.service_mode_code ?? "-"} />
-      {behavior.speed_profile_code && <Field label="Perfil combinado" value={behavior.speed_profile_code} />}
+    <div className="space-y-3">
+      {behavior.mode_simple === "unknown" && (
+        <div className="rounded-md border border-amber-100 bg-amber-50 p-3 text-sm text-amber-900">
+          <div className="font-medium">ONU importada sin clasificación operacional. Requiere saneamiento manual.</div>
+        </div>
+      )}
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <Field label="Modo ONU" value={behavior.mode_label} />
+        <Field label="Plantilla" value={behavior.template_name ?? behavior.mode_code ?? onu.service_mode_code ?? "-"} />
+        <Field
+          label="VLAN WAN"
+          value={behavior.vlan_name ? `${behavior.vlan_id} – ${behavior.vlan_name}` : behavior.vlan_id}
+        />
+        <Field label="Perfil subida" value={behavior.speed_profile_up ?? onu.speed_profile_up ?? ""} />
+        <Field
+          label="Perfil bajada"
+          value={behavior.speed_profile_down ?? onu.speed_profile_down ?? onu.speed_profile ?? ""}
+        />
+        <Field label="DHCP Source" value={behavior.dhcp_source ?? "-"} />
+        <Field label="IPHost" value={behavior.use_iphost ? "Sí" : "No"} />
+        <Field label="VEIP" value={behavior.use_veip ? "Sí" : "No"} />
+        <Field label="VLAN Filter" value={behavior.use_vlan_filter ? "Sí" : "No"} />
+        <Field label="Loop Detect" value={behavior.use_loop_detect ? "Sí" : "No"} />
+        <Field label="WiFi deshabilitado" value={behavior.disable_wifi ? "Sí" : "No"} />
+        <Field
+          label="Estado de calidad documental"
+          value={behavior.data_quality_status ?? onu.description_parse_status ?? "-"}
+        />
+      </div>
     </div>
   );
 }

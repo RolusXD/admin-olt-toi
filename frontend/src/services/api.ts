@@ -37,7 +37,10 @@ import type {
   Zone,
 } from "@/types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+// Base URL de la API. En tiempo de ejecuci\u00f3n en Docker Compose, se inyecta
+// NEXT_PUBLIC_API_URL desde docker-compose.yml apuntando a http://localhost:8400/api/v1.
+// El fallback se alinea tambi\u00e9n a 8400 para entornos locales sin esa variable.
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8400/api/v1";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isFormData = init?.body instanceof FormData;

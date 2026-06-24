@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    admin,
     alerts,
     auth,
     dashboard,
@@ -27,6 +28,7 @@ api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(alerts.router)
+api_router.include_router(admin.router)
 api_router.include_router(olts.router)
 api_router.include_router(zones.router)
 api_router.include_router(naps.router)

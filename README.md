@@ -37,9 +37,9 @@ La carga opcional de datos OLT de ejemplo requiere definir localmente `SEED_OLT_
 Servicios:
 
 - Frontend: http://localhost:3000
-- Backend: http://localhost:8000
-- Swagger: http://localhost:8000/docs
-- Health: http://localhost:8000/health
+- Backend (Docker Compose local): http://localhost:8400
+- Swagger: http://localhost:8400/docs
+- Health: http://localhost:8400/health
 
 ## Arquitectura
 

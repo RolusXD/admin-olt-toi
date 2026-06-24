@@ -31,7 +31,7 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
     ports:
-      - "8000:8000"
+      - "8400:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,7 +59,7 @@ services:
     build:
       context: ./frontend
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      NEXT_PUBLIC_API_URL: http://localhost:8400/api/v1
     ports:
       - "3000:3000"
     depends_on:

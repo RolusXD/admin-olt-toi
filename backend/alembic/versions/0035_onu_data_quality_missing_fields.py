@@ -1,6 +1,6 @@
 """add data quality missing fields json to onus
 
-Revision ID: 0035_onu_data_quality_missing_fields
+Revision ID: 0035_dq_missing_fields
 Revises: 0034_onu_data_quality_status
 Create Date: 2026-06-21
 """
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0035_onu_data_quality_missing_fields"
+revision = "0035_dq_missing_fields"
 down_revision = "0034_onu_data_quality_status"
 branch_labels = None
 depends_on = None

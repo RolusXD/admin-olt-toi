@@ -598,21 +598,46 @@ class OnuBehaviorRead(BaseModel):
     No se persiste en base de datos; se deriva a partir de Onu + catálogos
     (OnuServiceModeTemplate, Vlan, SpeedProfile) y se adjunta en el detalle
     de la ONU.
+
+    Fase P3 – Ficha Operacional ONU:
+    - Expone `service_mode_code` y un modo simple normalizado
+      (`router` / `bridge` / `transparent` / `unknown`).
+    - Proyecta la plantilla (`template_name` / `mode_code`) y flags
+      de comportamiento (DHCP, IPHost, VEIP, VLAN filter, loop detect,
+      WiFi).
+    - Incluye un resumen de calidad documental (`data_quality_status`
+      y `data_quality_missing_fields`).
     """
 
+    # Identidad del modo
+    service_mode_code: str | None = None
+    mode_simple: str
     mode_label: str
+    # Plantilla de comportamiento ONU por OLT
+    template_name: str | None = None
     mode_code: str | None = None
+
+    # WAN / perfiles
     vlan_id: int
     vlan_name: str | None = None
     speed_profile_up: str | None = None
     speed_profile_down: str | None = None
+    speed_profile_code: str | None = None
+
+    # Comportamiento operativo
     dhcp_source: str | None = None
     use_iphost: bool = False
     use_veip: bool = False
     use_vlan_filter: bool = False
     use_loop_detect: bool = False
     disable_wifi: bool = False
-    speed_profile_code: str | None = None
+
+    # Calidad documental
+    data_quality_status: str | None = None
+    data_quality_missing_fields: list[str] = []
+
+    # Advertencias suaves (por ejemplo, plantilla ausente)
+    warnings: list[str] = []
 
 
 class OnuSchema(BaseModel):
@@ -684,6 +709,58 @@ class OnuDataQualityRead(BaseModel):
     nap_port: int | None = None
     data_quality_status: str | None = None
     missing_fields: list[str] = []
+
+
+class OnuOperationalSanitySummary(BaseModel):
+    """Resumen agregado del saneamiento operacional de ONUs históricas.
+
+    Se utiliza en modo auditoría para cuantificar cuántas ONUs podrían
+    beneficiarse de una corrección documental/operacional sin aplicar
+    cambios automáticamente.
+    """
+
+    total_onus: int
+    candidate_service_mode_updates: int
+    candidate_zone_updates: int
+    candidate_nap_updates: int
+    candidate_auth_date_updates: int
+    ambiguous_cases: int
+
+
+class OnuOperationalSanityChange(BaseModel):
+    """Cambio propuesto para una ONU en modo auditoría (no aplicado).
+
+    Describe diferencias entre el estado actual y los valores sugeridos
+    a partir de snapshots `pon-onu-mng` y del parser de descripciones.
+    """
+
+    onu_id: int
+    olt_id: int
+    olt_code: str | None = None
+    onu_interface: str
+    serial_number: str
+
+    current_service_mode_code: str | None = None
+    suggested_service_mode_code: str | None = None
+
+    current_zone_name: str | None = None
+    suggested_zone_name: str | None = None
+
+    current_nap_name: str | None = None
+    suggested_nap_name: str | None = None
+
+    current_auth_date: datetime | None = None
+    suggested_auth_date: datetime | None = None
+
+    # Razones de la sugerencia (ej: service_mode_from_snapshot, zone_from_description).
+    reasons: list[str] = []
+
+
+class OnuOperationalSanityPreview(BaseModel):
+    """Respuesta completa del modo auditoría de saneamiento ONU."""
+
+    summary: OnuOperationalSanitySummary
+    changes: list[OnuOperationalSanityChange] = []
 
 
 class OnuInternalInfoUpdate(BaseModel):
