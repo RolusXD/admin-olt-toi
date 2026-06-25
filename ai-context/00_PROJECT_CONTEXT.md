@@ -12,7 +12,8 @@ TOI OLT Manager is an internal OSS application for multi-OLT inventory, ZTE C300
 - Read-only monitoring of cards, PON ports, uplinks, ONU state and optical power.
 - Unauthorized ONU discovery.
 - Provisioning plans, validation, preflight and controlled execution.
-- Internal FTTH catalogs: VLANs, profiles, ONU types, zones, NAPs and NAP ports.
+15 | - Internal FTTH catalogs: VLANs, profiles, ONU types, zones, NAPs and NAP ports.
+16 |   - La identidad canónica de NAP/ODN/ODB conserva siempre su prefijo (`NAP`, `ODN`, `ODB`); por ejemplo, `NAP D01` y `ODN D01` son entidades distintas que pueden coexistir en la misma OLT y no deben colapsarse bajo `D01`.
 
 ## Safety Baseline
 
@@ -26,7 +27,7 @@ Forbidden implicit commands include `write`, `save`, `reboot`, `reload`, `reset`
 - Backend: http://localhost:8000
 - API docs: http://localhost:8000/docs
 - PostgreSQL and Redis run through Docker Compose.
-- Current Alembic head: `0033_complete_snapshots`.
+- Current Alembic head: `0036_operational_governance`.
 
 ## AI Continuity
 

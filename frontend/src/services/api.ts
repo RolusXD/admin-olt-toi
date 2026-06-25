@@ -31,6 +31,7 @@ import type {
   ReadOnlyCheckResult,
   OnuType,
   SpeedProfile,
+  TerritorialAuditCenter,
   UnauthorizedOnu,
   UnauthorizedOnuDiscoveryResult,
   Vlan,
@@ -195,4 +196,6 @@ export const api = {
   unauthorized: () => request<Array<{ interface: string; serial_number: string; status: string }>>("/provisioning/unauthorized"),
   provisioningPlan: (payload: Record<string, unknown>) =>
     request<{ commands: string[] }>("/provisioning/plan", { method: "POST", body: JSON.stringify(payload) }),
+  territorialAuditCenter: () =>
+    request<TerritorialAuditCenter>("/admin/territorial/audit-center"),
 };

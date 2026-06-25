@@ -755,6 +755,25 @@ class MonitoringExecution(Base):
 
 
 class EventLog(Base):
+    """Event log operativo genérico.
+
+    Se reutiliza como base del Audit Trail y de la bitácora operativa.
+
+    Campos históricos existentes:
+    - event_type, entity_type, entity_id, description, created_at.
+
+    Campos nuevos (Sprint 0 – Gobierno Operativo):
+    - operation_id: identificador de operación OP-YYYY-XXXXXXXX.
+    - user_id / user_name: identidad del operador (humano o sistema).
+    - role_code: rol operativo actual (ADMIN/TECNICO/MONITOR/AUDITOR, etc.).
+    - origin: origen de la acción (api, scheduler, cli, import, provisioning, etc.).
+    - result: resultado resumido (success, failed, partial, pending, etc.).
+    - action: código de acción lógica (por ejemplo, "OLT.ADOPT", "ONU.UPDATE").
+    - duration_ms: duración estimada de la operación en milisegundos.
+    - reason: motivo declarado (opcional).
+    - error: mensaje/tipo de error (cuando exista).
+    """
+
     __tablename__ = "event_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -764,6 +783,20 @@ class EventLog(Base):
     description: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Contexto operacional ampliado (opcionales para compatibilidad).
+    operation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    user_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    role_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    origin: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    result: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    action: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    user: Mapped["User | None"] = relationship()
+
 
 class BackupFile(Base):
     __tablename__ = "backup_files"
@@ -772,3 +805,135 @@ class BackupFile(Base):
     olt_id: Mapped[int] = mapped_column(ForeignKey("olts.id", ondelete="CASCADE"))
     file_path: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class User(Base, TimestampMixin):
+    """Usuario interno de Admin OLT TOI.
+
+    No se utiliza todavía para autenticación HTTP (que sigue basada en
+    variables de entorno para el administrador), pero sirve como modelo
+    operativo para identidad de operador y gobierno.
+
+    Campos clave (EFO Sprint 0):
+    - nombre (full_name)
+    - usuario (username)
+    - correo (email)
+    - estado (status)
+    - activo/inactivo (is_active)
+    - último acceso (last_login_at)
+    - fecha creación (created_at)
+    - creado por (created_by_user_id / created_by_username_snapshot)
+    - última modificación (updated_at / updated_by_*)
+    - observaciones (notes)
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(160))
+    email: Mapped[str | None] = mapped_column(String(160), unique=True, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_by_username_snapshot: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by_username_snapshot: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_by: Mapped["User | None"] = relationship("User", remote_side="User.id", foreign_keys=[created_by_user_id])
+    updated_by: Mapped["User | None"] = relationship("User", remote_side="User.id", foreign_keys=[updated_by_user_id])
+
+
+class Role(Base, TimestampMixin):
+    """Rol operativo (ADMIN, TECNICO, MONITOR, AUDITOR, ...).
+
+    Los únicos roles iniciales que se poblarán en migración son los
+    cuatro requeridos por el Sprint 0. La tabla queda preparada para
+    crecer por configuración futura.
+    """
+
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(40), unique=True)
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Permission(Base, TimestampMixin):
+    """Permiso lógico desacoplado de los roles.
+
+    Ejemplos: ONU.READ, OLT.ADOPT, AUDIT.READ, USER.UPDATE, etc.
+    """
+
+    __tablename__ = "permissions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(80), unique=True)
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class UserRole(Base, TimestampMixin):
+    """Asignación de rol a usuario.
+
+    Permite que un usuario tenga múltiples roles operativos.
+    """
+
+    __tablename__ = "user_roles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"))
+
+    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    assigned_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    __table_args__ = (UniqueConstraint("user_id", "role_id", name="uq_user_roles_user_role"),)
+
+
+class RolePermission(Base, TimestampMixin):
+    """Asignación de permisos a roles con Execution Policy.
+
+    Cada fila indica cómo se evalúa un permiso concreto para un rol dado
+    (FULL / READ_ONLY / REVIEW / DENY) y si, en el futuro, requerirá
+    aprobación de supervisor.
+    """
+
+    __tablename__ = "role_permissions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"))
+    permission_id: Mapped[int] = mapped_column(ForeignKey("permissions.id", ondelete="CASCADE"))
+
+    execution_policy: Mapped[str] = mapped_column(String(20), default="FULL")
+    requires_supervisor_approval: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    __table_args__ = (UniqueConstraint("role_id", "permission_id", name="uq_role_permissions_role_permission"),)
+
+
+class OperationId(Base):
+    """Identificador de operación reutilizable (OP-YYYY-XXXXXXXX).
+
+    La tabla sirve únicamente para garantizar unicidad y secuencia
+    global. Otros módulos pueden reutilizar `code` como `operation_id`
+    en logs, importaciones, snapshots, provisioning, scheduler, CLI, etc.
+    """
+
+    __tablename__ = "operation_ids"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+

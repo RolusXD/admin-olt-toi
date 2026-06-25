@@ -18,6 +18,7 @@ from app.api.routes import (
     provisioning,
     provisioning_templates,
     speed_profiles,
+    territorial,
     unauthorized_onus,
     vlans,
     zones,
@@ -46,3 +47,4 @@ api_router.include_router(unauthorized_onus.router)
 api_router.include_router(events.router)
 api_router.include_router(monitoring.router)
 api_router.include_router(import_jobs_router)
+api_router.include_router(territorial.router)

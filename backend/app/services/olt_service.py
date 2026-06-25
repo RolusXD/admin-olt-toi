@@ -8,6 +8,8 @@ from app.drivers.zte.c300_v125p3_telnet import ZteC300V125P3TelnetDriver
 from app.models.entities import BackupFile, Olt
 from app.repositories.entities import OltRepository
 from app.services.event_service import EventService
+from app.services.operation_log_service import OperationLogService
+from app.services.operator_context_service import OperatorContext
 
 
 class OltService:
@@ -110,20 +112,92 @@ class OltService:
         finally:
             driver.disconnect()
 
-    def backup(self, olt: Olt) -> BackupFile:
+    def backup(self, olt: Olt, operator: OperatorContext | None = None) -> BackupFile:
+        """Ejecuta un snapshot manual de configuraci\u00f3n (backup running-config).
+
+        Esta operaci\u00f3n se considera el *Snapshot manual* del Sprint 0.75 y
+        se envuelve con ``OperationLogService`` para registrar:
+
+        - Inicio.
+        - Fin con resultado.
+        - Error (si ocurre).
+
+        El mismo ``operation_id`` se reutiliza en todos los eventos
+        asociados a esta ejecuci\u00f3n.
+        """
+
+        origin = operator.origin if operator is not None else "api"
+        op_log = OperationLogService(self.db, origin=origin)
+        ctx = op_log.start(
+            event_type="SNAPSHOT_MANUAL",
+            entity_type="olt",
+            entity_id=olt.id,
+            description=(
+                f"Inicio de snapshot manual de configuraci\u00f3n para "
+                f"OLT {olt.olt_code} - {olt.name}"
+            ),
+            operator=operator,
+            action="SNAPSHOT.MANUAL",
+        )
+
         driver = self.driver_for(olt)
         try:
-            driver.connect()
-            content = driver.backup()
+            try:
+                driver.connect()
+                content = driver.backup()
+            except Exception as exc:
+                # Error al obtener el snapshot manual
+                op_log.error(
+                    ctx,
+                    event_type="SNAPSHOT_MANUAL",
+                    entity_type="olt",
+                    entity_id=olt.id,
+                    description=(
+                        f"Error al ejecutar snapshot manual para "
+                        f"OLT {olt.olt_code} - {olt.name}"
+                    ),
+                    action="SNAPSHOT.MANUAL",
+                    error=str(exc),
+                )
+                raise
         finally:
             driver.disconnect()
+
         backup_dir = Path("storage/backups")
         backup_dir.mkdir(parents=True, exist_ok=True)
         file_path = backup_dir / f"olt-{olt.id}-running-config.txt"
         file_path.write_text(content, encoding="utf-8")
+
         record = BackupFile(olt_id=olt.id, file_path=str(file_path))
         self.db.add(record)
         self.db.commit()
         self.db.refresh(record)
-        self.events.record("BACKUP_CREATED", "olt", olt.id, f"Backup ejecutado para {olt.name}")
+
+        # Evento de bit\u00e1cora operativa entendible para el operador.
+        self.events.record(
+            "BACKUP_CREATED",
+            "olt",
+            olt.id,
+            f"Snapshot manual de configuraci\u00f3n ejecutado para OLT {olt.olt_code} - {olt.name}",
+            operation_id=ctx.operation_id,
+            user_id=operator.user_id if operator is not None else None,
+            user_name=operator.user_name if operator is not None else None,
+            role_code=operator.role_code if operator is not None else None,
+            origin=origin,
+            result="success",
+            action="SNAPSHOT.MANUAL",
+        )
+
+        op_log.success(
+            ctx,
+            event_type="SNAPSHOT_MANUAL",
+            entity_type="olt",
+            entity_id=olt.id,
+            description=(
+                f"Snapshot manual de configuraci\u00f3n completado para "
+                f"OLT {olt.olt_code} - {olt.name}"
+            ),
+            action="SNAPSHOT.MANUAL",
+        )
+
         return record

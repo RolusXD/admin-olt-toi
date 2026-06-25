@@ -247,6 +247,42 @@ Orden sugerido de trabajo:
   - Borrar warnings históricos.
 - Cualquier dato nuevo se añade en campos estructurados o notas de técnico, preservando la fuente heredada.
 
+### 5.7. Identidad canónica de NAPs
+
+La normalización de datos heredados **no puede** colapsar entidades distintas bajo un mismo identificador ambiguo.
+
+1. **Prefijo obligatorio en la identidad canónica**
+   - El identificador lógico de NAP/ODN/ODB **incluye siempre el prefijo**:
+     - `NAP`
+     - `ODN`
+     - `ODB`
+   - El sufijo numérico/letra (por ejemplo `D01`, `D2`, `F7`) **no es suficiente** para identificar una entidad.
+   - Ejemplo: `D01` por sí solo **no puede** usarse como clave canónica.
+
+2. **NAP y ODN son entidades distintas**
+   - Durante la auditoría operacional de ONUs en la OLT `FTTH-PCM-ZTE1` se confirmó, a partir del inventario histórico de SmartOLT, que:
+     - `NAP D01` y `ODN D01` **no son** el mismo elemento.
+     - `NAP D2` ≠ `ODN D2`.
+     - `NAP D3` ≠ `ODN D3`.
+     - `NAP D4` ≠ `ODN D4`.
+     - `NAP F7` ≠ `ODN F7`.
+   - Estos pares deben coexistir dentro de una misma OLT sin ser fusionados ni reinterpretados como sinónimos.
+
+3. **Regla de identidad canónica**
+   - La identidad canónica debe conservar **siempre** el prefijo completo:
+     - `NAP D01`, `NAP D2`, `NAP F7`, etc.
+     - `ODN D01`, `ODN D2`, `ODN F7`, etc.
+     - `ODB ...` cuando aplique.
+   - Cualquier catálogo de planta externa por OLT (zonas, NAPs, ODN/ODB, puertos de NAP) debe tratar estos valores como claves distintas aunque compartan el mismo sufijo (`D01`, `D2`, `D3`, `D4`, `F7`).
+
+4. **Riesgos de colisión al eliminar prefijos**
+   - **No se permite** ninguna normalización que elimine o reescriba los prefijos `NAP` / `ODN` / `ODB` durante procesos de importación, auditoría o saneamiento.
+   - Eliminar prefijos y trabajar sólo con `D01`, `D2`, `F7`, etc., provoca:
+     - Colisiones entre entidades distintas (NAP vs ODN/ODB).
+     - Pérdida de trazabilidad de planta externa.
+     - Riesgo de asociar ONUs a la infraestructura física incorrecta.
+   - Cualquier herramienta de saneamiento debe preservar el prefijo como parte de la clave visible y de los índices internos utilizados para revisión.
+
 ---
 
 ## 6. Altas nuevas de ONU

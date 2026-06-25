@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
 
-from app.api.deps import DbSession, get_olt_or_404
+from app.api.deps import DbSession, get_current_operator, get_olt_or_404
 from app.drivers.errors import DriverCommandError
 from app.core.config import settings
 from app.models.entities import ConfigSnapshot, DriverCommandLog, GponProfile, ImportJob, Olt, OltCard, OltTechnicalSettings, OltUplink, Onu, PonPort, Vlan
@@ -373,16 +373,24 @@ def command_logs(
 
 
 @router.post("/{olt_id}/import/preview", response_model=ImportPreviewResponse)
-def initial_import_preview(olt_id: int, db: DbSession) -> dict:
+def initial_import_preview(
+    olt_id: int,
+    db: DbSession,
+    operator=Depends(get_current_operator),
+) -> dict:
     olt = get_olt_or_404(db, olt_id)
     try:
-        return InitialImportService(db).preview(olt)
+        return InitialImportService(db).preview(olt, operator=operator)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 @router.post("/{olt_id}/import/preview-from-telnet", response_model=ImportPreviewResponse)
-def initial_import_preview_from_telnet(olt_id: int, db: DbSession) -> dict:
+def initial_import_preview_from_telnet(
+    olt_id: int,
+    db: DbSession,
+    operator=Depends(get_current_operator),
+) -> dict:
     try:
-        return InitialImportService(db).create_preview_from_telnet(olt_id)
+        return InitialImportService(db).create_preview_from_telnet(olt_id, operator=operator)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except DriverCommandError as exc:
@@ -417,6 +425,9 @@ async def initial_import_preview_from_file(olt_id: int, db: DbSession, file: Upl
     except UnicodeDecodeError:
         raw_config = raw_bytes.decode("latin-1")
     try:
+        # Para previsualizaci\u00f3n desde archivo el operador se resuelve
+        # expl\u00edcitamente en el endpoint superior (alias telnet/text); aqu\u00ed
+        # mantenemos compatibilidad hist\u00f3rica sin identidad.
         return InitialImportService(db).create_preview_from_text(olt_id, raw_config, source="file")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -425,9 +436,13 @@ async def initial_import_preview_from_file(olt_id: int, db: DbSession, file: Upl
 
 
 @router.post("/{olt_id}/import/preview-from-telnet", response_model=ImportPreviewResponse)
-def initial_import_preview_from_telnet(olt_id: int, db: DbSession) -> dict:
+def initial_import_preview_from_telnet_legacy(
+    olt_id: int,
+    db: DbSession,
+    operator=Depends(get_current_operator),
+) -> dict:
     try:
-        return InitialImportService(db).create_preview_from_telnet(olt_id)
+        return InitialImportService(db).create_preview_from_telnet(olt_id, operator=operator)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -435,10 +450,15 @@ def initial_import_preview_from_telnet(olt_id: int, db: DbSession) -> dict:
 
 
 @router.post("/{olt_id}/import/confirm/{import_job_id}", response_model=ImportConfirmResponse)
-def initial_import_confirm(olt_id: int, import_job_id: int, db: DbSession) -> dict:
+def initial_import_confirm(
+    olt_id: int,
+    import_job_id: int,
+    db: DbSession,
+    operator=Depends(get_current_operator),
+) -> dict:
     olt = get_olt_or_404(db, olt_id)
     try:
-        return InitialImportService(db).confirm(olt, import_job_id)
+        return InitialImportService(db).confirm(olt, import_job_id, operator=operator)
     except SnapshotValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ImportCriticalError as exc:
@@ -462,7 +482,11 @@ def list_initial_import_jobs_alias(olt_id: int, db: DbSession) -> list[dict]:
 
 
 @router.post("/{olt_id}/backup")
-def backup(olt_id: int, db: DbSession) -> dict[str, str]:
+def backup(
+    olt_id: int,
+    db: DbSession,
+    operator=Depends(get_current_operator),
+) -> dict[str, str]:
     olt = get_olt_or_404(db, olt_id)
-    backup_file = OltService(db).backup(olt)
+    backup_file = OltService(db).backup(olt, operator=operator)
     return {"file_path": backup_file.file_path}

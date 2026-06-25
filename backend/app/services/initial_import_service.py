@@ -35,6 +35,8 @@ from app.models.entities import (
     Zone,
 )
 from app.services.event_service import EventService
+from app.services.operation_log_service import OperationLogService
+from app.services.operator_context_service import OperatorContext
 from app.services.onu_data_quality_service import OnuDataQualityService
 
 
@@ -47,9 +49,13 @@ class SnapshotValidationError(ValueError):
 
 
 class InitialImportService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, origin: str = "api"):
         self.db = db
         self.events = EventService(db)
+        # OperationLogService combina OperationIdService + EventService
+        # para registrar operaciones de importaci\u00f3n con Operation IDs
+        # reutilizables en la bit\u00e1cora operativa.
+        self.operation_log = OperationLogService(db, origin=origin)
         self.data_quality = OnuDataQualityService(db)
 
     IMPORT_SOURCE_BY_JOB_SOURCE = {
@@ -58,8 +64,35 @@ class InitialImportService:
         "text": "text_input",
     }
 
-    def create_preview_from_text(self, olt_id: int, raw_config: str, source: str = "text") -> dict:
+    def create_preview_from_text(
+        self,
+        olt_id: int,
+        raw_config: str,
+        source: str = "text",
+        operator: OperatorContext | None = None,
+    ) -> dict:
+        """Crear preview de importaci\u00f3n inicial a partir de texto plano.
+
+        Envuelve el flujo con OperationLogService para registrar:
+
+        - Inicio de importaci\u00f3n.
+        - Snapshot obtenido desde archivo/texto.
+        - Preview generado / error.
+        """
+
         olt = self._get_olt_or_error(olt_id)
+        ctx = self.operation_log.start(
+            event_type="IMPORT_INITIAL",
+            entity_type="olt",
+            entity_id=olt.id,
+            description=(
+                f"Inicio de importaci\u00f3n inicial desde {source} "
+                f"para OLT {olt.olt_code} - {olt.name}"
+            ),
+            operator=operator,
+            action="IMPORT.INITIAL.PREVIEW",
+        )
+
         snapshot = ConfigSnapshot(
             olt_id=olt.id,
             raw_config=raw_config,
@@ -70,7 +103,53 @@ class InitialImportService:
         self.db.add(snapshot)
         self.db.commit()
         self.db.refresh(snapshot)
-        return self._create_preview_from_snapshot(olt, snapshot, source, require_final_prompt=False)
+
+        # Snapshot obtenido
+        self.events.record(
+            "IMPORT_SNAPSHOT_CAPTURED",
+            "olt",
+            olt.id,
+            f"Snapshot de running-config capturado para OLT {olt.olt_code} - {olt.name} (fuente: {source})",
+            operation_id=ctx.operation_id,
+            user_id=operator.user_id if operator is not None else None,
+            user_name=operator.user_name if operator is not None else None,
+            role_code=operator.role_code if operator is not None else None,
+            origin=operator.origin if operator is not None else "api",
+            result="success",
+            action="IMPORT.INITIAL.SNAPSHOT",
+        )
+
+        try:
+            result = self._create_preview_from_snapshot(olt, snapshot, source, require_final_prompt=False)
+        except Exception as exc:  # pragma: no cover - el detalle lo ejercen tests de snapshot
+            # Error en generaci\u00f3n de preview
+            self.operation_log.error(
+                ctx,
+                event_type="IMPORT_INITIAL",
+                entity_type="olt",
+                entity_id=olt.id,
+                description=(
+                    f"Error generando preview de importaci\u00f3n inicial "
+                    f"para OLT {olt.olt_code} - {olt.name}"
+                ),
+                action="IMPORT.INITIAL.PREVIEW",
+                error=str(exc),
+            )
+            raise
+
+        # Preview generado correctamente
+        self.operation_log.success(
+            ctx,
+            event_type="IMPORT_INITIAL",
+            entity_type="olt",
+            entity_id=olt.id,
+            description=(
+                f"Preview de importaci\u00f3n inicial generado para "
+                f"OLT {olt.olt_code} - {olt.name} desde {source}"
+            ),
+            action="IMPORT.INITIAL.PREVIEW",
+        )
+        return result
 
     def _create_preview_from_snapshot(
         self,
@@ -112,7 +191,13 @@ class InitialImportService:
             self.db.flush()
             olt.initial_import_status = "preview_created"
             olt.last_import_job_id = job.id
-            self.events.record("IMPORT_PREVIEW_CREATED", "olt", olt.id, f"Preview inicial creado para OLT {olt.olt_code} - {olt.name}")
+            # Evento hist\u00f3rico existente (se mantiene por compatibilidad).
+            self.events.record(
+                "IMPORT_PREVIEW_CREATED",
+                "olt",
+                olt.id,
+                f"Preview inicial creado para OLT {olt.olt_code} - {olt.name}",
+            )
             self.db.commit()
             self.db.refresh(job)
             return {"import_job_id": job.id, "snapshot_id": snapshot.id, **summary}
@@ -123,42 +208,91 @@ class InitialImportService:
             self.db.commit()
             raise
 
-    def create_preview_from_telnet(self, olt_id: int) -> dict:
+    def create_preview_from_telnet(
+        self,
+        olt_id: int,
+        operator: OperatorContext | None = None,
+    ) -> dict:
+        """Crear preview de importaci\u00f3n inicial ejecutando Telnet real.
+
+        Registra inicio/fin/error de la operaci\u00f3n y el snapshot
+        obtenido bajo un Operation ID com\u00fan.
+        """
+
         olt = self._get_olt_or_error(olt_id)
         from app.services.olt_service import OltService
+
+        ctx = self.operation_log.start(
+            event_type="IMPORT_INITIAL",
+            entity_type="olt",
+            entity_id=olt.id,
+            description=(
+                f"Inicio de importaci\u00f3n inicial desde Telnet para "
+                f"OLT {olt.olt_code} - {olt.name}"
+            ),
+            operator=operator,
+            action="IMPORT.INITIAL.PREVIEW",
+        )
 
         olt_service = OltService(self.db)
         driver = olt_service.driver_for(olt)
         try:
-            driver.connect(disable_paging=True)
-            raw_config = driver.show_running_config()
-            self._log_command(olt.id, "show running-config", True, raw_config)
-        except DriverTimeoutError as exc:
-            # Attach the last sanitized CLI output for diagnostics and
-            # translate into a DriverCommandError so API layers can
-            # treat it like any other command failure.
-            diagnostic_output = exc.output or ""
-            olt.initial_import_status = "failed"
-            self._log_command(
-                olt.id,
-                "show running-config",
-                False,
-                diagnostic_output,
-                str(exc),
-            )
-            self.db.commit()
-            raise DriverCommandError(
-                command="show running-config",
-                message=str(exc),
-                output=diagnostic_output,
-            )
-        except DriverCommandError as exc:
-            olt.initial_import_status = "failed"
-            self._log_command(olt.id, exc.command, False, exc.output, exc.message)
-            self.db.commit()
-            raise
+            try:
+                driver.connect(disable_paging=True)
+                raw_config = driver.show_running_config()
+                self._log_command(olt.id, "show running-config", True, raw_config)
+            except DriverTimeoutError as exc:
+                # Attach the last sanitized CLI output for diagnostics and
+                # translate into a DriverCommandError so API layers can
+                # treat it like any other command failure.
+                diagnostic_output = exc.output or ""
+                olt.initial_import_status = "failed"
+                self._log_command(
+                    olt.id,
+                    "show running-config",
+                    False,
+                    diagnostic_output,
+                    str(exc),
+                )
+                self.db.commit()
+                # Registrar error de operaci\u00f3n
+                self.operation_log.error(
+                    ctx,
+                    event_type="IMPORT_INITIAL",
+                    entity_type="olt",
+                    entity_id=olt.id,
+                    description=(
+                        f"Error al obtener snapshot Telnet para OLT "
+                        f"{olt.olt_code} - {olt.name}"
+                    ),
+                    action="IMPORT.INITIAL.PREVIEW",
+                    error=str(exc),
+                )
+                raise DriverCommandError(
+                    command="show running-config",
+                    message=str(exc),
+                    output=diagnostic_output,
+                )
+            except DriverCommandError as exc:
+                olt.initial_import_status = "failed"
+                self._log_command(olt.id, exc.command, False, exc.output, exc.message)
+                self.db.commit()
+                self.operation_log.error(
+                    ctx,
+                    event_type="IMPORT_INITIAL",
+                    entity_type="olt",
+                    entity_id=olt.id,
+                    description=(
+                        f"Error al ejecutar {exc.command} durante "
+                        f"importaci\u00f3n inicial de OLT {olt.olt_code} - {olt.name}"
+                    ),
+                    action="IMPORT.INITIAL.PREVIEW",
+                    error=str(exc),
+                )
+                raise
         finally:
             driver.disconnect()
+
         snapshot = ConfigSnapshot(
             olt_id=olt.id,
             raw_config=raw_config,
@@ -169,25 +303,84 @@ class InitialImportService:
         self.db.add(snapshot)
         self.db.commit()
         self.db.refresh(snapshot)
-        return self._create_preview_from_snapshot(olt, snapshot, "telnet", require_final_prompt=True)
 
-    def confirm_import(self, import_job_id: int) -> dict:
+        # Snapshot obtenido
+        self.events.record(
+            "IMPORT_SNAPSHOT_CAPTURED",
+            "olt",
+            olt.id,
+            f"Snapshot de running-config capturado para OLT {olt.olt_code} - {olt.name} (fuente: telnet)",
+            operation_id=ctx.operation_id,
+            user_id=operator.user_id if operator is not None else None,
+            user_name=operator.user_name if operator is not None else None,
+            role_code=operator.role_code if operator is not None else None,
+            origin=operator.origin if operator is not None else "api",
+            result="success",
+            action="IMPORT.INITIAL.SNAPSHOT",
+        )
+
+        try:
+            result = self._create_preview_from_snapshot(olt, snapshot, "telnet", require_final_prompt=True)
+        except Exception as exc:  # pragma: no cover - validaciones espec\u00edficas ya cubiertas
+            self.operation_log.error(
+                ctx,
+                event_type="IMPORT_INITIAL",
+                entity_type="olt",
+                entity_id=olt.id,
+                description=(
+                    f"Error generando preview de importaci\u00f3n inicial "
+                    f"para OLT {olt.olt_code} - {olt.name} desde Telnet"
+                ),
+                action="IMPORT.INITIAL.PREVIEW",
+                error=str(exc),
+            )
+            raise
+
+        self.operation_log.success(
+            ctx,
+            event_type="IMPORT_INITIAL",
+            entity_type="olt",
+            entity_id=olt.id,
+            description=(
+                f"Preview de importaci\u00f3n inicial generado para "
+                f"OLT {olt.olt_code} - {olt.name} desde Telnet"
+            ),
+            action="IMPORT.INITIAL.PREVIEW",
+        )
+        return result
+
+    def confirm_import(
+        self,
+        import_job_id: int,
+        operator: OperatorContext | None = None,
+    ) -> dict:
         job = self.db.get(ImportJob, import_job_id)
         if not job:
             raise ValueError("Import job not found")
         olt = self._get_olt_or_error(job.olt_id)
-        return self._confirm_job(olt, job)
+        return self._confirm_job(olt, job, operator=operator)
 
-    def preview(self, olt: Olt) -> dict:
-        return self.create_preview_from_telnet(olt.id)
+    def preview(self, olt: Olt, operator: OperatorContext | None = None) -> dict:
+        return self.create_preview_from_telnet(olt.id, operator=operator)
 
-    def confirm(self, olt: Olt, import_job_id: int) -> dict:
+    def confirm(
+        self,
+        olt: Olt,
+        import_job_id: int,
+        operator: OperatorContext | None = None,
+    ) -> dict:
         job = self.db.get(ImportJob, import_job_id)
         if not job or job.olt_id != olt.id:
             raise ValueError("Import job not found for this OLT")
-        return self._confirm_job(olt, job)
+        return self._confirm_job(olt, job, operator=operator)
 
-    def _confirm_job(self, olt: Olt, job: ImportJob) -> dict:
+    def _confirm_job(
+        self,
+        olt: Olt,
+        job: ImportJob,
+        *,
+        operator: OperatorContext | None = None,
+    ) -> dict:
         if job.status == "confirmed":
             return {
                 "import_job_id": job.id,
@@ -206,6 +399,18 @@ class InitialImportService:
             raise ImportCriticalError(
                 f"Import job en estado '{job.status}' no puede confirmarse"
             )
+
+        ctx = self.operation_log.start(
+            event_type="IMPORT_INITIAL_CONFIRM",
+            entity_type="olt",
+            entity_id=olt.id,
+            description=(
+                f"Inicio de confirmaci\u00f3n de importaci\u00f3n inicial "
+                f"para OLT {olt.olt_code} - {olt.name} (job {job.id})"
+            ),
+            operator=operator,
+            action="IMPORT.INITIAL.CONFIRM",
+        )
 
         snapshot = self.db.get(ConfigSnapshot, job.raw_config_snapshot_id)
         if not snapshot:
@@ -313,8 +518,36 @@ class InitialImportService:
         olt.initial_import_status = "confirmed"
         olt.last_import_job_id = job.id
         olt.last_import_confirmed_at = job.confirmed_at
-        self.events.record("IMPORT_CONFIRMED", "olt", olt.id, f"Importacion inicial confirmada para OLT {olt.olt_code} - {olt.name}")
+
+        # Evento hist\u00f3rico de confirmaci\u00f3n enriquecido con OperationId
+        self.events.record(
+            "IMPORT_CONFIRMED",
+            "olt",
+            olt.id,
+            f"Importacion inicial confirmada para OLT {olt.olt_code} - {olt.name}",
+            operation_id=ctx.operation_id,
+            user_id=operator.user_id if operator is not None else None,
+            user_name=operator.user_name if operator is not None else None,
+            role_code=operator.role_code if operator is not None else None,
+            origin=operator.origin if operator is not None else "api",
+            result="success",
+            action="IMPORT.INITIAL.CONFIRM",
+        )
+
         self.db.commit()
+
+        self.operation_log.success(
+            ctx,
+            event_type="IMPORT_INITIAL_CONFIRM",
+            entity_type="olt",
+            entity_id=olt.id,
+            description=(
+                f"Importacion inicial confirmada para OLT {olt.olt_code} - {olt.name} "
+                f"(job {job.id})"
+            ),
+            action="IMPORT.INITIAL.CONFIRM",
+        )
+
         return {"import_job_id": job.id, "status": job.status, **counters}
 
     def _preview_summary(self, parsed, olt_id: int) -> dict:

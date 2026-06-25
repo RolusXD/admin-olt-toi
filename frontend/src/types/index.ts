@@ -704,6 +704,71 @@ export type ProvisioningPreflightResult = {
   errors: string[];
 };
 
+// ---------------------- Territorial Audit (P4.5) -----------------------
+
+export type TerritorialAuditOltSummary = {
+  olt_id: number;
+  olt_code: string;
+  olt_name: string;
+
+  total_onus: number;
+
+  zones_existing_count: number;
+  zones_missing_count: number;
+  zones_reassignable_onus: number;
+  zones_blocked_onus: number;
+
+  naps_existing_count: number;
+  naps_proposed_count: number;
+  naps_new_count: number;
+  naps_exists_count: number;
+  naps_review_count: number;
+  naps_blocked_count: number;
+
+  onus_with_cross_olt_zone: number;
+  onus_with_cross_olt_nap: number;
+
+  territorial_health_score: number;
+  status: "HEALTHY" | "NEEDS_REVIEW" | "DEGRADED" | "CRITICAL" | string;
+};
+
+export type TerritorialAuditStateSummary = {
+  new_count: number;
+  exists_count: number;
+  review_count: number;
+  blocked_count: number;
+  merge_count: number;
+};
+
+export type TerritorialAuditConfidenceSummary = {
+  alta_count: number;
+  media_count: number;
+  baja_count: number;
+  bloqueado_count: number;
+};
+
+export type TerritorialAuditIssue = {
+  issue_type: string;
+  severity: string;
+  olt_id?: number | null;
+  olt_code?: string | null;
+  entity_type: string;
+  entity_name?: string | null;
+  affected_onu_count?: number | null;
+  message: string;
+  recommendation?: string | null;
+};
+
+export type TerritorialAuditCenter = {
+  generated_at: string;
+  olt_summaries: TerritorialAuditOltSummary[];
+  zone_state_summary: TerritorialAuditStateSummary;
+  nap_state_summary: TerritorialAuditStateSummary;
+  confidence_summary: TerritorialAuditConfidenceSummary;
+  critical_issues: TerritorialAuditIssue[];
+  recommendations: string[];
+};
+
 export type DashboardEnvironmentSummary = {
   production: {
     environment: string;

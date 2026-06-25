@@ -166,6 +166,68 @@ Regla de oro (EFO de Calidad):
 
 > Misma `vlan_id` en dos OLT distintas representan **servicios distintos**; nunca se reutilizan catálogos VLAN entre OLTs sin una tabla global explícita.
 
+## 2.bis. Normalización de nombres de NAP y ODN
+
+### 2.bis.1. Identidad canónica de nombres NAP/ODN
+
+La normalización de nombres de NAP/ODN/ODB debe preservar **siempre** el prefijo semántico como parte de la identidad canónica.
+
+- El identificador canónico incluye el prefijo completo:
+  - `NAP`
+  - `ODN`
+  - `ODB`
+- El sufijo (`D01`, `D2`, `D3`, `D4`, `F7`, etc.) **no es suficiente** para identificar una entidad única.
+- Ejemplo: `D01` por sí solo **no puede** utilizarse como clave canónica ni como nombre normalizado.
+
+Durante la auditoría operacional de ONUs en `OLT-PCM-ZTE-01` (inventario histórico SmartOLT) se confirmó que:
+
+- `NAP D01` y `ODN D01` **no son** el mismo elemento.
+- `NAP D2` ≠ `ODN D2`.
+- `NAP D3` ≠ `ODN D3`.
+- `NAP D4` ≠ `ODN D4`.
+- `NAP F7` ≠ `ODN F7`.
+
+Estos pares deben coexistir dentro de una misma OLT sin ser fusionados ni reinterpretados como sinónimos; cualquier normalización que los colapse bajo `D01`, `D2`, `F7`, etc., se considera inválida.
+
+### 2.bis.2. Normalización permitida de nombres NAP
+
+Se permite normalizar **variantes de formato** que conserven el prefijo y la semántica del identificador, por ejemplo espacios vs guiones:
+
+Permitido (equivalencias de formato):
+
+- `ODN C4_A`
+- `ODN C4-A`
+- `ODN C4 A`
+
+Todas las variantes anteriores pueden converger en un identificador canónico único, por ejemplo:
+
+- `ODN C4 A`
+
+Reglas:
+
+1. El prefijo (`NAP` / `ODN` / `ODB`) **nunca se elimina**.
+2. Se permite normalizar espacios, guiones y subrayados internos mientras se mantenga la misma secuencia de tokens tras el prefijo.
+3. Se pueden aplicar reglas de mayúsculas/minúsculas consistentes (por ejemplo, prefijos en mayúscula y sufijos normalizados) siempre que no se pierda información.
+
+### 2.bis.3. Normalización explícitamente NO permitida
+
+No se permite ninguna normalización que cambie el tipo de entidad ni que elimine el prefijo:
+
+- `NAP D4` → `ODN D4`  ❌
+- `ODN D4` → `NAP D4`  ❌
+- `NAP D4` → `D4`      ❌
+- `ODN D4` → `D4`      ❌
+
+De forma general:
+
+- **No está permitido** mapear nombres `NAP *` a nombres `ODN *` ni viceversa durante importación, auditoría o saneamiento.
+- **No está permitido** colapsar `NAP`/`ODN`/`ODB` bajo un identificador sin prefijo.
+- El parser y las herramientas de saneamiento deben tratar los prefijos `NAP`/`ODN`/`ODB` como parte de la identidad canónica, no como ruido removible.
+
+Estas reglas aplican tanto a la interpretación de descripciones heredadas (por ejemplo, provenientes de SmartOLT) como a futuras fases de catálogo NAP por OLT y saneamiento operacional.
+
+---
+
 ---
 
 ## 4. Modelo estructurado esperado desde `pon-onu-mng`

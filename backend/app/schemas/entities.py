@@ -777,6 +777,304 @@ class OnuInternalInfoUpdate(BaseModel):
     technician_notes: str | None = None
 
 
+class ZoneReconstructionOltSummary(BaseModel):
+    """Resumen por OLT de la preview de reconstrucción de Zones (P4.1).
+
+    Todos los campos son de solo lectura y se calculan a partir de las ONUs
+    y las Zones existentes, sin aplicar cambios en BD.
+    """
+
+    olt_id: int
+    olt_code: str
+    olt_name: str
+
+    total_onus: int
+
+    # Listas de nombres de zonas existentes/propuestas (por nombre lógico).
+    zones_existing: list[str] = []
+    zones_missing_proposed: list[str] = []
+
+    # Conteos de ONUs por categoría.
+    onus_with_correct_zone: int
+    onus_with_cross_olt_zone: int
+    onus_without_zone: int
+    onus_reassignable: int
+    onus_blocked: int
+
+
+class ZoneReconstructionOnuProposal(BaseModel):
+    """Fila de matriz ONU actual vs propuesta para Zones por OLT (P4.1).
+
+    Describe el estado territorial actual de la ONU y la propuesta de Zone
+    por OLT con un nivel de confianza y razones documentales.
+    """
+
+    onu_id: int
+    olt_id: int
+    olt_code: str | None = None
+
+    interface: str
+    serial: str
+    customer_name: str
+
+    current_zone_id: int | None = None
+    current_zone_name: str | None = None
+    current_zone_olt_id: int | None = None
+    current_zone_olt_code: str | None = None
+    current_zone_olt_name: str | None = None
+
+    proposed_zone_name: str | None = None
+    proposed_zone_olt_id: int | None = None
+    proposed_zone_olt_code: str | None = None
+    proposed_zone_olt_name: str | None = None
+
+    # Nivel de confianza de la propuesta territorial para esta ONU.
+    # Valores esperados: "ALTA" | "MEDIA" | "BAJA" | "BLOQUEADO".
+    confidence: str
+
+    # Razones textuales (ej. from_parsed_zone_name, from_description_structured,
+    # conflict_parsed_vs_description, no_zone_evidence, cross_olt_zone_detected).
+    reasons: list[str] = []
+
+
+class ZoneReconstructionPreview(BaseModel):
+    """Resultado completo de la auditoría de preview de Zones por OLT (P4.1).
+
+    - ``summaries``: resumen agregado por OLT.
+    - ``catalog_proposals``: catálogo consolidado propuesto por OLT/zona.
+    - ``onus``: matriz detallada ONU actual vs propuesta.
+    """
+    summaries: list[ZoneReconstructionOltSummary]
+    catalog_proposals: list["ZoneReconstructionCatalogProposal"] = []
+    onus: list[ZoneReconstructionOnuProposal] = []
+
+
+class ZoneReconstructionCatalogProposal(BaseModel):
+    """Entrada de catálogo consolidado de Zones propuestas por OLT.
+
+    Se deriva agrupando ONUs por (olt_id, proposed_zone_name) y
+    cuantificando evidencia y confianza para cada zona candidata.
+    """
+
+    olt_id: int
+    olt_code: str
+    olt_name: str
+
+    proposed_zone_name: str
+
+    # Estado actual en el catálogo territorial de esa OLT.
+    exists_in_olt: bool
+    existing_zone_id: int | None = None
+
+    # Número de ONUs que respaldan esta propuesta en esa OLT.
+    onu_count: int
+
+    # Nivel de confianza agregado para la zona (`ALTA`/`MEDIA`/`BAJA`/`BLOQUEADO`).
+    confidence: str
+
+    # Razones agregadas (ej.: zone_missing_in_olt, zone_exists_in_olt,
+    # from_parsed_zone_name, from_zone_name_field, affected_by_cross_olt_zone).
+    reasons: list[str] = []
+
+    # Campos de origen que aportan evidencia (parsed_zone_name, zone_name).
+    source_fields: list[str] = []
+    onus: list[ZoneReconstructionOnuProposal] = []
+
+
+class NapReconstructionCatalogProposal(BaseModel):
+    """Entrada consolidada de catálogo NAP/ODN/ODB propuesta por OLT.
+
+    Se utiliza en P4.3 para agrupar evidencia por (OLT, zona, tipo de
+    objeto territorial y nombre canónico) sin modificar la BD.
+    """
+
+    olt_id: int
+    olt_code: str
+    olt_name: str
+
+    proposed_zone_name: str | None = None
+    object_type: str
+    canonical_name: str
+    display_name: str
+    code: str
+    notes: str | None = None
+
+    exists_in_olt: bool
+    existing_nap_id: int | None = None
+
+    onu_count: int
+
+    identity_score: int
+    evidence_score: int
+    state: str
+    confidence: str
+
+    reasons: list[str] = []
+    source_fields: list[str] = []
+    supporting_onu_ids: list[int] = []
+
+
+class NapReconstructionOnuProposal(BaseModel):
+    """Fila ONU actual vs propuesta para NAP/ODN/ODB (P4.3).
+
+    Describe cómo quedaría la ONU respecto a NAP/ODN/ODB propuestos
+    para su misma OLT, sin aplicar cambios.
+    """
+
+    onu_id: int
+    olt_id: int
+    olt_code: str | None = None
+
+    interface: str
+    serial: str
+    customer_name: str
+
+    current_nap_id: int | None = None
+    current_nap_name: str | None = None
+    current_nap_olt_id: int | None = None
+    current_nap_olt_code: str | None = None
+
+    parsed_nap_name: str | None = None
+    parsed_odn: str | None = None
+    odb_name: str | None = None
+
+    proposed_zone_name: str | None = None
+    proposed_object_type: str | None = None
+    proposed_canonical_name: str | None = None
+    proposed_olt_id: int | None = None
+
+    state: str
+    confidence: str
+    identity_score: int
+    evidence_score: int
+    reasons: list[str] = []
+
+
+class NapReconstructionOltSummary(BaseModel):
+    """Resumen por OLT de la preview de reconstrucción NAP/ODN/ODB (P4.3)."""
+
+    olt_id: int
+    olt_code: str
+    olt_name: str
+
+    total_onus: int
+
+    existing_naps: list[str] = []
+    proposed_catalog_count: int
+    proposed_new_count: int
+    proposed_exists_count: int
+    proposed_review_count: int
+    proposed_blocked_count: int
+
+    onus_with_nap_id: int
+    onus_with_cross_olt_nap: int
+    onus_without_nap_id: int
+    onus_reassignable: int
+    onus_blocked: int
+
+
+class NapReconstructionPreview(BaseModel):
+    """Resultado completo de la preview de reconstrucción NAP/ODN/ODB (P4.3).
+
+    - ``summaries``: resumen agregado por OLT.
+    - ``catalog_proposals``: catálogo consolidado propuesto por OLT/zona/tipo.
+    - ``onus``: matriz detallada ONU actual vs propuesta.
+    """
+
+    summaries: list[NapReconstructionOltSummary]
+    catalog_proposals: list[NapReconstructionCatalogProposal] = []
+    onus: list[NapReconstructionOnuProposal] = []
+
+
+class TerritorialAuditOltSummary(BaseModel):
+    """Resumen consolidado de auditoría territorial por OLT (P4.5).
+
+    Agrega en una sola vista los indicadores clave de Zones y NAP/ODN/ODB
+    reutilizando los previews existentes, sin modificar la base de datos.
+    """
+
+    olt_id: int
+    olt_code: str
+    olt_name: str
+
+    total_onus: int
+
+    zones_existing_count: int
+    zones_missing_count: int
+    zones_reassignable_onus: int
+    zones_blocked_onus: int
+
+    naps_existing_count: int
+    naps_proposed_count: int
+    naps_new_count: int
+    naps_exists_count: int
+    naps_review_count: int
+    naps_blocked_count: int
+
+    onus_with_cross_olt_zone: int
+    onus_with_cross_olt_nap: int
+
+    territorial_health_score: int
+    status: str
+
+
+class TerritorialAuditStateSummary(BaseModel):
+    """Resumen por estado de candidatos territoriales.
+
+    Se usa tanto para Zones como para NAP/ODN/ODB.
+    """
+
+    new_count: int = 0
+    exists_count: int = 0
+    review_count: int = 0
+    blocked_count: int = 0
+    merge_count: int = 0
+
+
+class TerritorialAuditConfidenceSummary(BaseModel):
+    """Resumen por nivel de confianza agregado (ALTA/MEDIA/BAJA/BLOQUEADO)."""
+
+    alta_count: int = 0
+    media_count: int = 0
+    baja_count: int = 0
+    bloqueado_count: int = 0
+
+
+class TerritorialAuditIssue(BaseModel):
+    """Issue crítico o relevante detectado por el Centro de Auditoría."""
+
+    issue_type: str
+    severity: str
+
+    olt_id: int | None = None
+    olt_code: str | None = None
+
+    entity_type: str
+    entity_name: str | None = None
+
+    affected_onu_count: int | None = None
+
+    message: str
+    recommendation: str | None = None
+
+
+class TerritorialAuditCenter(BaseModel):
+    """Vista consolidada del Centro de Auditoría Territorial (P4.5).
+
+    Read-only, construida a partir de los previews de Zones y NAP/ODN/ODB.
+    """
+
+    generated_at: datetime
+
+    olt_summaries: list[TerritorialAuditOltSummary] = []
+    zone_state_summary: TerritorialAuditStateSummary
+    nap_state_summary: TerritorialAuditStateSummary
+    confidence_summary: TerritorialAuditConfidenceSummary
+
+    critical_issues: list[TerritorialAuditIssue] = []
+    recommendations: list[str] = []
+
+
 class PowerSampleCreate(BaseModel):
     onu_id: int
     rx_power: float

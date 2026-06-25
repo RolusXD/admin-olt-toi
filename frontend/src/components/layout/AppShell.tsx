@@ -21,6 +21,7 @@ const nav = [
   { label: "Plantillas", icon: Boxes, href: "/provisioning-templates" },
   { label: "Aprovisionamiento", icon: FileCheck2, href: "/aprovisionamiento" },
   { label: "Monitoreo", icon: History, href: "/monitoreo" },
+  { label: "Auditoría Territorial", icon: ShieldCheck, href: "/territorial-audit" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
